@@ -1,0 +1,670 @@
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ *  AI Voice Control – Stylesheet
+ *
+ *  Farbschema:
+ *    - Hintergrund:   fast-schwarz (#0a0a14)
+ *    - Idle:          gedämpftes Blau
+ *    - User spricht:  leuchtendes Blau (#4a9eff)
+ *    - KI spricht:    Lila/Violett (#9b59f5)
+ *    - Fehler:        Rot (#ff4444)
+ *    - Verbinden:     Orange/Gelb (#f59e0b)
+ *
+ *  Zustandssteuerung:
+ *    Die CSS-Klasse auf dem Container (.state-idle, .state-user-speaking, etc.)
+ *    steuert das gesamte Aussehen. Kein JavaScript nötig für Farb-/Animationswechsel –
+ *    alles wird über CSS-Selektoren wie ".state-user-speaking .ai-voice-orb" gelöst.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+
+/* ── Hauptcontainer ──────────────────────────────────────────────────────
+   Füllt den gesamten verfügbaren Platz und ordnet die drei Bereiche
+   (Header, Orb-Bereich, Footer) vertikal an.
+   "justify-content: space-between" verteilt sie gleichmäßig mit Abstand. */
+.ai-voice-container {
+    width: 100%;                                  /* volle Breite des Elternelements */
+    height: 100%;                                 /* volle Höhe des Elternelements */
+    min-height: 0;                                /* verhindert Flex-Overflow in fixen Hosts */
+    background: rgba(10, 10, 20, 0.97);           /* fast-schwarzer Hintergrund, 97% deckend */
+    display: flex;                                /* Flexbox-Layout aktivieren */
+    flex-direction: column;                       /* Kindelemente untereinander stapeln */
+    align-items: center;                          /* horizontal zentrieren */
+    justify-content: space-between;               /* Abstand zwischen Header, Orb und Footer */
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif; /* System-Schriftart je nach OS */
+    color: #e0e0e0;                               /* helles Grau als Standardtextfarbe */
+    border-radius: 12px;                          /* abgerundete Ecken */
+    overflow: hidden;                             /* Inhalte, die über den Rand ragen, abschneiden */
+    position: relative;                           /* Positionierungsanker für absolute Kindelemente */
+    box-sizing: border-box;                       /* Padding wird IN die Breite/Höhe eingerechnet */
+    padding: 16px;                                /* 16px Innenabstand auf allen Seiten */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   HEADER – Statusanzeige (links) und Stopp-Button (rechts)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Header-Zeile: Status links, Stopp-Button rechts */
+.ai-voice-header {
+    width: 100%;
+    display: flex;
+    align-items: center;                          /* vertikal zentriert */
+    justify-content: space-between;               /* links und rechts auseinander */
+    padding: 0 4px;
+    flex-shrink: 0;                               /* Header darf nicht schrumpfen, wenn Platz knapp wird */
+}
+
+/* Status-Label Container (Dot + Text nebeneinander) */
+.ai-voice-status-label {
+    font-size: 12px;
+    color: #888;                                  /* gedämpftes Grau */
+    display: flex;
+    align-items: center;
+    gap: 6px;                                     /* 6px Abstand zwischen Dot und Text */
+}
+
+/* Kleiner runder Status-Punkt (grün/gelb/rot je nach Zustand) */
+.ai-voice-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;                           /* 50% = perfekter Kreis */
+    background: #444;                             /* Standard: grauer Punkt (idle) */
+    transition: background 0.3s;                  /* sanfter Farbwechsel über 0.3 Sekunden */
+    flex-shrink: 0;                               /* Punkt darf nicht kleiner werden */
+}
+
+/* Grüner Punkt wenn verbunden (egal ob listening, user- oder ai-speaking) */
+.state-connected .ai-voice-status-dot,
+.state-user-speaking .ai-voice-status-dot,
+.state-ai-speaking .ai-voice-status-dot {
+    background: #22c55e;                          /* Grün */
+}
+
+/* Gelber blinkender Punkt beim Verbinden */
+.state-connecting .ai-voice-status-dot {
+    background: #f59e0b;                          /* Orange/Gelb */
+    animation: blink 1s ease-in-out infinite;     /* blinkt endlos mit 1s Zyklus */
+}
+
+/* Roter Punkt bei Fehlern */
+.state-error .ai-voice-status-dot {
+    background: #ff4444;
+}
+
+/* Stopp-Button – standardmäßig versteckt (display: none) */
+.ai-voice-stop-btn {
+    background: transparent;                      /* durchsichtiger Hintergrund */
+    border: 1px solid rgba(255, 68, 68, 0.45);   /* halbtransparenter roter Rand */
+    color: #ff6b6b;                               /* rote Schriftfarbe */
+    padding: 5px 14px;                            /* Innenabstand: 5px oben/unten, 14px links/rechts */
+    border-radius: 20px;                          /* "Pill"-Form (stark abgerundet) */
+    font-size: 12px;
+    cursor: pointer;                              /* Hand-Cursor beim Hovern */
+    display: none;                                /* versteckt bis state-active */
+    transition: all 0.2s;                         /* sanfte Übergänge bei Hover */
+    letter-spacing: 0.3px;                        /* leicht gespreizter Text */
+}
+
+/* Hover-Effekt: dezenter roter Hintergrund */
+.ai-voice-stop-btn:hover {
+    background: rgba(255, 68, 68, 0.12);          /* sehr leichtes Rot */
+    border-color: rgba(255, 68, 68, 0.7);         /* kräftigerer Rand */
+}
+
+/* Stopp-Button wird sichtbar, sobald eine Session aktiv ist */
+.state-active .ai-voice-stop-btn {
+    display: block;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ORB-BEREICH – Der zentrale animierte Kreis mit Wellenringen
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Mittlerer Bereich: nimmt den gesamten restlichen Platz ein (flex: 1) */
+.ai-voice-orb-area {
+    flex: 1;                                      /* dehnt sich aus und füllt den Platz zwischen Header und Footer */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;                      /* Orb vertikal zentrieren */
+    gap: 20px;                                    /* 20px Abstand zwischen Orb und VU-Meter */
+    position: relative;
+}
+
+/* Wrapper für den Orb und seine 3 Wellenringe – gibt ihnen einen gemeinsamen Rahmen */
+.ai-voice-orb-wrapper {
+    position: relative;                           /* Positionierungsanker für die absolut positionierten Ringe */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 200px;                                 /* größer als der Orb (140px), damit die Ringe Platz haben */
+    height: 200px;
+}
+
+/* Wellenringe – 3 identische Kreise, die sich bei Sprechen nach außen ausdehnen.
+   Standardmäßig unsichtbar (border: transparent). Werden erst durch
+   .state-user-speaking oder .state-ai-speaking aktiviert. */
+.ai-voice-ring {
+    position: absolute;                           /* überlagern sich alle am selben Punkt (Mitte des Wrappers) */
+    width: 140px;                                 /* gleiche Größe wie der Orb – expandieren dann per Animation */
+    height: 140px;
+    border-radius: 50%;                           /* Kreis */
+    border: 2px solid transparent;                /* unsichtbar bis ein Zustand die Farbe setzt */
+    pointer-events: none;                         /* Klicks gehen durch die Ringe hindurch zum Orb */
+}
+
+/* ── Der Orb selbst – der große Kreis in der Mitte ───────────────────────
+   Besteht aus einem radialen Farbverlauf (heller oben-links → dunkler unten-rechts)
+   und mehreren Schatten für den 3D-/Leuchteffekt.
+   
+   box-shadow erklärt:
+     "0 0 30px rgba(...)":       äußeres Leuchten (Glow) – kein Versatz, nur Blur
+     "inset 0 0 40px rgba(...)": innerer Schatten – erzeugt die "Tiefe" im Kreis */
+.ai-voice-orb {
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;                           /* perfekter Kreis */
+    background: radial-gradient(circle at 35% 35%, #1e2a4a, #0d1220);
+        /* Farbverlauf von helles Blau-Grau (oben-links, 35%/35%) zu fast-Schwarz.
+           "circle at 35% 35%" = der helle Punkt sitzt oben-links → erzeugt 3D-Kugel-Effekt */
+    box-shadow:
+        0 0 30px rgba(74, 158, 255, 0.12),        /* äußerer blauer Glow, schwach */
+        0 0 60px rgba(74, 158, 255, 0.05),        /* noch weiterer, noch schwächerer Glow */
+        inset 0 0 40px rgba(0, 0, 0, 0.6);        /* innerer Schatten für Tiefenwirkung */
+    position: relative;
+    transition: transform 0.08s ease-out, box-shadow 0.25s ease;
+        /* transform: 80ms Reaktionszeit (für schnelle Orb-Skalierung beim Sprechen)
+           box-shadow: 250ms (langsamerer, weicherer Glühwechsel bei Zustandsänderung) */
+    display: flex;
+    align-items: center;
+    justify-content: center;                      /* SVG-Icon im Orb zentrieren */
+    z-index: 2;                                   /* Orb liegt über den Wellenringen */
+    flex-shrink: 0;                               /* Orb darf nicht schrumpfen */
+}
+
+/* Mikrofon-Icon im Zentrum des Orbs */
+.ai-voice-orb-icon {
+    width: 44px;
+    height: 44px;
+    color: #5a90d4;                               /* gedämpftes Blau (wird per state geändert) */
+    opacity: 0.75;                                /* leicht transparent im Idle-Zustand */
+    transition: color 0.3s, opacity 0.3s;         /* sanfter Farbwechsel */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ZUSTANDSABHÄNGIGE ORB-ANIMATIONEN
+   Jeder Zustand (.state-xxx) verändert Farbe, Leuchten und Animation des Orbs.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Idle: sanftes „Atmen" ───────────────────────────────────────────────
+   Im Ruhezustand pulsiert der Orb leicht (scale 1.0 → 1.06) über 4 Sekunden.
+   Signalisiert: "Ich bin bereit, aber nicht aktiv." */
+.state-idle .ai-voice-orb {
+    animation: breathe 4s ease-in-out infinite;   /* endlose Atem-Animation */
+}
+
+/* ── Connecting: drehender Lichtring ─────────────────────────────────────
+   Ein konischer Farbverlauf (conic-gradient) dreht sich um den Orb herum
+   und erzeugt einen "Lade-Spinner"-Effekt. */
+.state-connecting .ai-voice-orb {
+    animation: none;                              /* Atem-Animation aus */
+}
+
+/* ::after erzeugt ein Pseudo-Element HINTER dem Orb (z-index: -1).
+   Es ist 4px größer als der Orb auf jeder Seite (inset: -4px)
+   und dreht sich endlos per "spin"-Animation. */
+.state-connecting .ai-voice-orb::after {
+    content: '';                                  /* Pseudo-Element braucht content um zu existieren */
+    position: absolute;
+    inset: -4px;                                  /* 4px über den Orb-Rand hinaus in alle Richtungen */
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, #4a9eff 0%, transparent 60%, #4a9eff 100%);
+        /* Kegelförmiger Verlauf: Blau → durchsichtig → Blau.
+           Erzeugt den Effekt eines teilweise sichtbaren drehenden Rings. */
+    animation: spin 1.1s linear infinite;         /* eine volle Drehung alle 1.1 Sekunden */
+    z-index: -1;                                  /* hinter dem Orb */
+    border-radius: 50%;
+}
+
+/* ── User speaking: blauer Leuchteffekt + Wellenringe ────────────────────
+   Wenn der Benutzer spricht: kräftigeres Blau, stärkeres Leuchten.
+   Die Orb-Größe wird zusätzlich per JavaScript dynamisch skaliert (je nach Lautstärke). */
+.state-user-speaking .ai-voice-orb {
+    box-shadow:
+        0 0 45px rgba(74, 158, 255, 0.55),        /* starker blauer Glow */
+        0 0 90px rgba(74, 158, 255, 0.2),          /* weiter äußerer Glow */
+        inset 0 0 30px rgba(0, 0, 0, 0.4);
+    background: radial-gradient(circle at 35% 35%, #1e3a6a, #0d1a35);  /* kräftigeres Blau */
+    animation: none;                              /* Atem-Animation deaktivieren (JS steuert die Skalierung) */
+}
+
+/* Icon wird heller und voll deckend */
+.state-user-speaking .ai-voice-orb-icon {
+    color: #7ab8ff;                               /* helleres Blau */
+    opacity: 1;                                   /* voll sichtbar statt 0.75 */
+}
+
+/* Drei Wellenringe expandieren zeitversetzt nach außen:
+   Ring 1: sofort, Ring 2: nach 0.4s, Ring 3: nach 0.8s
+   → erzeugt den Effekt konzentrischer Wellen wie bei einem Stein im Wasser.
+   Die Ringe werden von scale(1) zu scale(2) vergrößert und dabei unsichtbar (opacity: 0). */
+.state-user-speaking .ai-voice-ring-1 {
+    border-color: rgba(74, 158, 255, 0.55);       /* halbtransparentes Blau */
+    animation: ring-expand 1.2s ease-out infinite; /* 1.2s pro Welle, endlos */
+}
+
+.state-user-speaking .ai-voice-ring-2 {
+    border-color: rgba(74, 158, 255, 0.3);        /* schwächeres Blau */
+    animation: ring-expand 1.2s ease-out 0.4s infinite;  /* startet 0.4s verzögert */
+}
+
+.state-user-speaking .ai-voice-ring-3 {
+    border-color: rgba(74, 158, 255, 0.15);       /* noch schwächer */
+    animation: ring-expand 1.2s ease-out 0.8s infinite;  /* startet 0.8s verzögert */
+}
+
+/* ── Listening: ruhiges blaues Atmen ─────────────────────────────────────
+   Verbunden, aber niemand spricht gerade. Sanftes Pulsieren signalisiert Bereitschaft. */
+.state-listening .ai-voice-orb {
+    box-shadow:
+        0 0 25px rgba(74, 158, 255, 0.2),         /* dezentes Leuchten */
+        inset 0 0 35px rgba(0, 0, 0, 0.5);
+    animation: breathe-soft 3s ease-in-out infinite; /* sanfteres Atmen als im Idle (nur 4% statt 6%) */
+}
+
+/* ── AI speaking: lila/violette Wellen ───────────────────────────────────
+   Die KI spricht: Farbwechsel zu Lila. Gleiche Wellenring-Logik wie user-speaking,
+   aber langsamer (1.8s statt 1.2s) und in Violett statt Blau. */
+.state-ai-speaking .ai-voice-orb {
+    box-shadow:
+        0 0 45px rgba(155, 89, 245, 0.55),        /* lila Glow */
+        0 0 90px rgba(155, 89, 245, 0.2),
+        inset 0 0 30px rgba(0, 0, 0, 0.4);
+    background: radial-gradient(circle at 35% 35%, #2a1a50, #140d28);  /* dunkles Violett */
+    animation: ai-pulse 2s ease-in-out infinite;   /* langsames Pulsieren */
+}
+
+.state-ai-speaking .ai-voice-orb-icon {
+    color: #c084fc;                               /* helles Lila */
+    opacity: 1;
+}
+
+/* Lila Wellenringe – langsamer als die blauen (1.8s statt 1.2s pro Welle) */
+.state-ai-speaking .ai-voice-ring-1 {
+    border-color: rgba(155, 89, 245, 0.55);
+    animation: ring-expand 1.8s ease-out infinite;
+}
+
+.state-ai-speaking .ai-voice-ring-2 {
+    border-color: rgba(155, 89, 245, 0.3);
+    animation: ring-expand 1.8s ease-out 0.6s infinite;  /* 0.6s Versatz */
+}
+
+.state-ai-speaking .ai-voice-ring-3 {
+    border-color: rgba(155, 89, 245, 0.15);
+    animation: ring-expand 1.8s ease-out 1.2s infinite;  /* 1.2s Versatz */
+}
+
+/* ── Error: roter Orb ohne Animation ─────────────────────────────────────
+   Signalisiert Fehler durch rotes Leuchten. Keine Animation → "tot". */
+.state-error .ai-voice-orb {
+    box-shadow: 0 0 35px rgba(255, 68, 68, 0.45), inset 0 0 30px rgba(0, 0, 0, 0.5);
+    background: radial-gradient(circle at 35% 35%, #4a1a1a, #200d0d);  /* dunkles Rot */
+    animation: none;
+}
+
+.state-error .ai-voice-orb-icon {
+    color: #ff6b6b;                               /* Rot */
+    opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   VU-METER – 7 kleine Balken unter dem Orb, die das Frequenzspektrum zeigen
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Container für die 7 Balken – standardmäßig unsichtbar (opacity: 0) */
+.ai-voice-vu-meter {
+    display: flex;
+    align-items: flex-end;                        /* Balken wachsen von unten nach oben */
+    gap: 4px;                                     /* 4px Abstand zwischen den Balken */
+    height: 28px;                                 /* maximale Höhe des Meters */
+    opacity: 0;                                   /* unsichtbar bis jemand spricht */
+    transition: opacity 0.3s;                     /* sanftes Ein-/Ausblenden */
+}
+
+/* VU-Meter wird sichtbar wenn der Benutzer spricht */
+.state-user-speaking .ai-voice-vu-meter {
+    opacity: 1;
+}
+
+/* Einzelner VU-Balken – Höhe wird per JavaScript dynamisch gesetzt */
+.ai-voice-bar {
+    width: 4px;                                   /* schmale Balken */
+    background: linear-gradient(to top, #2563eb, #60a5fa);
+        /* Farbverlauf von dunkelblau (unten) nach hellblau (oben) */
+    border-radius: 2px;                           /* leicht abgerundete Enden */
+    transition: height 0.07s ease;                /* sehr schnelle Höhen-Animation (70ms) für Echtzeit-Reaktion */
+    min-height: 3px;                              /* Mindesthöhe: immer ein kleiner Punkt sichtbar */
+    height: 3px;                                  /* Standardhöhe (Ruhe) */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   STATUSTEXT – zeigt den aktuellen Zustand als Text an (z. B. „Du sprichst…")
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.ai-voice-status-text {
+    font-size: 13px;
+    color: #666;                                  /* Standard: gedämpftes Grau */
+    margin: 0;
+    min-height: 18px;                             /* verhindert Layout-Sprung wenn Text wechselt */
+    letter-spacing: 0.2px;
+    transition: all 0.3s;
+    text-align: center;
+    animation: fade-in 0.3s ease;                 /* Text blendet bei jedem Wechsel kurz ein */
+}
+
+/* Textfarbe passt sich dem Zustand an */
+.state-user-speaking .ai-voice-status-text { color: #60a5fa; }  /* Blau */
+.state-ai-speaking .ai-voice-status-text   { color: #c084fc; }  /* Lila */
+.state-connecting .ai-voice-status-text    { color: #f59e0b; }  /* Orange */
+.state-error .ai-voice-status-text         { color: #ff6b6b; }  /* Rot */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FOOTER – Start-Button, Konfigurationswarnung
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Footer-Container: vertikal gestapelt, zentriert */
+.ai-voice-footer {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;                                    /* 10px Abstand zwischen Elementen */
+    flex-shrink: 0;                               /* Footer behält immer seine Größe */
+    padding-bottom: 4px;
+}
+
+/* „Gespräch starten"-Button mit blau-lila Farbverlauf */
+.ai-voice-start-btn {
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+        /* Farbverlauf von Blau (oben-links) nach Violett (unten-rechts) */
+    color: white;
+    border: none;                                 /* kein Standard-Rahmen */
+    padding: 13px 36px;                           /* großzügiger Innenabstand */
+    border-radius: 50px;                          /* "Pill"-Form: extrem abgerundete Ecken */
+    font-size: 15px;
+    font-weight: 500;                             /* medium-fett */
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;                                     /* Abstand zwischen Icon und Text */
+    transition: all 0.2s;
+    box-shadow: 0 4px 22px rgba(37, 99, 235, 0.38); /* blauer Schlagschatten unter dem Button */
+    letter-spacing: 0.3px;
+}
+
+/* Hover: Button schwebt 2px nach oben + stärkerer Schatten */
+.ai-voice-start-btn:hover:not(:disabled) {
+    transform: translateY(-2px);                  /* 2px nach oben verschieben */
+    box-shadow: 0 7px 28px rgba(37, 99, 235, 0.5); /* tieferer, stärkerer Schatten */
+}
+
+/* Active (Klick): Button springt zurück auf Ausgangsposition */
+.ai-voice-start-btn:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+/* Deaktivierter Button: halbtransparent und nicht klickbar */
+.ai-voice-start-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;                          /* "Verboten"-Cursor */
+}
+
+/* Konfigurationswarnung – gelbe Box, standardmäßig versteckt.
+   Wird sichtbar wenn APIKey/Endpoint/DeploymentName fehlen
+   (JavaScript setzt die Klasse "visible"). */
+.ai-voice-config-warning {
+    font-size: 11px;
+    color: #f59e0b;                               /* Warngelb */
+    text-align: center;
+    padding: 5px 10px;
+    background: rgba(245, 158, 11, 0.1);          /* sehr dezenter gelber Hintergrund */
+    border-radius: 6px;
+    border: 1px solid rgba(245, 158, 11, 0.2);   /* leichter gelber Rand */
+    display: none;                                /* standardmäßig versteckt */
+}
+
+/* Wird per JavaScript eingeblendet wenn Konfiguration fehlt */
+.ai-voice-config-warning.visible {
+    display: block;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   KEYFRAME-ANIMATIONEN
+   
+   @keyframes definiert die Einzelbilder einer Animation.
+   "0%, 100%" = Anfang und Ende (identisch → nahtlose Schleife).
+   "50%" = Mitte der Animation.
+   Der Browser berechnet alle Zwischenwerte automatisch (Interpolation).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Atem-Animation für den Idle-Zustand:
+   Orb wächst auf 106% und das Leuchten wird stärker, dann zurück.
+   Erzeugt den Eindruck von sanftem "Atmen". */
+@keyframes breathe {
+    0%, 100% { transform: scale(1.0);   box-shadow: 0 0 20px rgba(74, 158, 255, 0.08), inset 0 0 40px rgba(0,0,0,0.6); }
+    50%       { transform: scale(1.06); box-shadow: 0 0 38px rgba(74, 158, 255, 0.18), inset 0 0 35px rgba(0,0,0,0.5); }
+}
+
+/* Sanftere Atem-Animation für den Listening-Zustand (nur 4% statt 6%) */
+@keyframes breathe-soft {
+    0%, 100% { transform: scale(1.0); }
+    50%       { transform: scale(1.04); }
+}
+
+/* Puls-Animation für KI-Sprechen: etwas stärker als breathe-soft (7%) */
+@keyframes ai-pulse {
+    0%, 100% { transform: scale(1.0); }
+    50%       { transform: scale(1.07); }
+}
+
+/* Wellenring-Expansion: Ring wächst auf doppelte Größe und wird dabei unsichtbar.
+   Wird für die 3 konzentrischen Ringe bei user-speaking und ai-speaking verwendet.
+   Durch zeitversetzten Start (animation-delay) der 3 Ringe entsteht der Welleneffekt. */
+@keyframes ring-expand {
+    0%   { transform: scale(1);   opacity: 0.85; }  /* Startgröße, fast voll sichtbar */
+    100% { transform: scale(2);   opacity: 0; }     /* doppelt so groß, komplett unsichtbar */
+}
+
+/* Endlose 360°-Drehung für den Connecting-Spinner-Ring */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* Blink-Animation für den gelben Status-Dot beim Verbinden */
+@keyframes blink {
+    0%, 100% { opacity: 1; }                      /* voll sichtbar */
+    50%       { opacity: 0.25; }                   /* fast unsichtbar → "blinkt" */
+}
+
+/* Sanftes Einblenden mit leichter Aufwärtsbewegung (für Statustext-Wechsel) */
+@keyframes fade-in {
+    from { opacity: 0; transform: translateY(3px); }  /* unsichtbar, 3px nach unten versetzt */
+    to   { opacity: 1; transform: translateY(0); }    /* voll sichtbar, an Normalposition */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CHAT-PANEL – WhatsApp-Style Transkript-Anzeige (Split-View)
+   
+   Toggle-Logik:
+     .chat-open auf dem Container → Orb schrumpft, Chat-Panel erscheint darunter.
+     Ohne .chat-open → Chat-Panel ist ausgeblendet, Orb nimmt vollen Platz ein.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Chat-Toggle-Button im Header ────────────────────────────────────────
+   Sprechblasen-Icon rechts im Header. Transparent bis Hover/Aktiv. */
+.ai-chat-toggle {
+    background: transparent;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.ai-chat-toggle svg {
+    width: 18px;
+    height: 18px;
+}
+
+.ai-chat-toggle:hover {
+    color: #e0e0e0;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* Toggle aktiv (Chat offen): Icon wird blau */
+.chat-open .ai-chat-toggle {
+    color: #4a9eff;
+}
+
+.chat-open .ai-chat-toggle:hover {
+    color: #7ab8ff;
+    background: rgba(74, 158, 255, 0.12);
+}
+
+/* ── Chat-Panel Container ────────────────────────────────────────────────
+   Standardmäßig versteckt. Bei .chat-open wird es sichtbar und nimmt
+   den verbleibenden Platz unter dem geschrumpften Orb ein. */
+.ai-chat-panel {
+    display: none;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+    flex-direction: column;
+}
+
+.ai-voice-container.chat-open {
+    justify-content: flex-start;
+}
+
+.chat-open .ai-chat-panel {
+    display: flex;
+    flex: 1;
+    min-height: 0;                                /* Erlaubt Schrumpfen in Flexbox */
+    overflow-y: auto;                             /* genau ein Scroll-Container */
+    overflow-x: hidden;
+}
+
+/* ── Split-View: Orb schrumpft wenn Chat offen ───────────────────────────
+   Orb-Bereich bekommt feste Höhe, Orb-Wrapper skaliert kleiner. */
+.chat-open .ai-voice-orb-area {
+    flex: 0 0 clamp(88px, 24%, 118px);
+    height: auto;
+    gap: 4px;
+    min-height: 88px;
+    transition: all 0.3s ease;
+}
+
+.chat-open .ai-voice-orb-wrapper {
+    transform: scale(0.46);
+    transition: transform 0.3s ease;
+}
+
+/* VU-Meter im Chat-Modus ausblenden */
+.chat-open .ai-voice-vu-meter {
+    display: none;
+}
+
+/* Sanfte Transition für den Orb-Bereich (Rückkehr zur vollen Größe) */
+.ai-voice-orb-area {
+    transition: all 0.3s ease;
+}
+
+.ai-voice-orb-wrapper {
+    transition: transform 0.3s ease;
+}
+
+/* ── Chat-Nachrichten-Container ──────────────────────────────────────────
+   Flex-Column mit Gap für die Bubbles. Scrollbar wenn viele Nachrichten. */
+.ai-chat-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 10px;
+    min-height: min-content;
+}
+
+/* Custom Scrollbar (Dark Theme) */
+.ai-chat-panel::-webkit-scrollbar {
+    width: 4px;
+}
+
+.ai-chat-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.ai-chat-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+}
+
+.ai-chat-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+/* ── Chat-Bubbles ────────────────────────────────────────────────────────
+   WhatsApp-Style: User rechts (blau), KI links (lila).
+   Abgerundete Ecken mit einer spitzen Ecke an der Seite des Sprechers. */
+.ai-chat-bubble {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    font-size: 13px;
+    line-height: 1.45;
+    word-wrap: break-word;
+    animation: chat-bubble-in 0.25s ease-out;
+}
+
+/* User-Bubble: rechts, blau */
+.ai-chat-user {
+    align-self: flex-end;
+    background: rgba(74, 158, 255, 0.18);
+    color: #c8e0ff;
+    border-bottom-right-radius: 4px;              /* WhatsApp-Ecke rechts unten */
+}
+
+/* KI-Bubble: links, lila */
+.ai-chat-ai {
+    align-self: flex-start;
+    background: rgba(155, 89, 245, 0.14);
+    color: #d8c8ff;
+    border-bottom-left-radius: 4px;               /* WhatsApp-Ecke links unten */
+}
+
+/* ── Empty-State ─────────────────────────────────────────────────────────
+   Dezenter Platzhaltertext im leeren Chat-Panel. */
+.ai-chat-empty {
+    color: #555;
+    font-size: 12px;
+    text-align: center;
+    margin: auto 0;
+    padding: 20px;
+    font-style: italic;
+}
+
+/* ── Bubble-Einblend-Animation ───────────────────────────────────────────
+   Neue Bubble gleitet sanft von unten ein und blendet auf. */
+@keyframes chat-bubble-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

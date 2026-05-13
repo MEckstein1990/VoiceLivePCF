@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <!-- Control -->
+  <data name="VoiceLiveChat" xml:space="preserve">
+    <value>Voice Live Chat</value>
+  </data>
+  <data name="VoiceLiveChat_Desc" xml:space="preserve">
+    <value>Echtzeit-Sprach-Dialog mit KI-Assistent via Azure Voice Live API</value>
+  </data>
+  <!-- AuthMode -->
+  <data name="AuthMode_Display" xml:space="preserve">
+    <value>Authentifizierung</value>
+  </data>
+  <data name="AuthMode_Desc" xml:space="preserve">
+    <value>Authentifizierungsmethode. APIKey = Direkter API-Schluessel (Dev/Test). OAuthToken = Token von Custom Connector oder Flow (Produktion).</value>
+  </data>
+  <data name="AuthMode_APIKey_Display" xml:space="preserve">
+    <value>API Key</value>
+  </data>
+  <data name="AuthMode_OAuthToken_Display" xml:space="preserve">
+    <value>OAuth Token</value>
+  </data>
+  <!-- APIKey -->
+  <data name="VLC_APIKey_Display" xml:space="preserve">
+    <value>API Key</value>
+  </data>
+  <data name="VLC_APIKey_Desc" xml:space="preserve">
+    <value>Azure AI Services API-Schluessel. Nur bei AuthMode APIKey erforderlich. Fuer Produktion wird OAuthToken empfohlen, da kein Secret im Client liegt.</value>
+  </data>
+  <!-- Token -->
+  <data name="Token_Display" xml:space="preserve">
+    <value>OAuth Token</value>
+  </data>
+  <data name="Token_Desc" xml:space="preserve">
+    <value>Kurzlebiger Bearer-Token (JWT) fuer die WebSocket-Authentifizierung. Nur bei AuthMode OAuthToken erforderlich. Wird per Custom Connector und Flow oder Azure Function bereitgestellt. Gueltigkeit ca. 1h, danach per Power Fx erneuern.</value>
+  </data>
+  <!-- Endpoint -->
+  <data name="VLC_Endpoint_Display" xml:space="preserve">
+    <value>Endpoint URL</value>
+  </data>
+  <data name="VLC_Endpoint_Desc" xml:space="preserve">
+    <value>Azure AI Services Endpoint-URL (z.B. https://myresource.cognitiveservices.azure.com). Bei allen AuthModes erforderlich.</value>
+  </data>
+  <!-- ModelName -->
+  <data name="ModelName_Display" xml:space="preserve">
+    <value>Modellname</value>
+  </data>
+  <data name="ModelName_Desc" xml:space="preserve">
+    <value>Name des AI-Modells (z.B. gpt-4.1)</value>
+  </data>
+  <!-- SystemPrompt -->
+  <data name="VLC_SystemPrompt_Display" xml:space="preserve">
+    <value>System Prompt</value>
+  </data>
+  <data name="VLC_SystemPrompt_Desc" xml:space="preserve">
+    <value>Optionaler System-Prompt fuer den KI-Assistenten. Wenn leer, wird ein Standard-Prompt verwendet.</value>
+  </data>
+  <!-- Connected -->
+  <data name="Connected_Display" xml:space="preserve">
+    <value>Connected</value>
+  </data>
+  <data name="Connected_Desc" xml:space="preserve">
+    <value>Steuert den Session-Start (true) und -Stop (false). Kann per Power Fx Toggle oder Button gesetzt werden.</value>
+  </data>
+  <!-- ConnectionStatus -->
+  <data name="VLC_ConnectionStatus_Display" xml:space="preserve">
+    <value>Verbindungsstatus</value>
+  </data>
+  <data name="VLC_ConnectionStatus_Desc" xml:space="preserve">
+    <value>Aktueller Zustand: idle, connecting, listening, user-speaking, ai-speaking oder error.</value>
+  </data>
+  <!-- Transcript -->
+  <data name="VLC_Transcript_Display" xml:space="preserve">
+    <value>Transkript</value>
+  </data>
+  <data name="VLC_Transcript_Desc" xml:space="preserve">
+    <value>Vollstaendiges Gespraechstranskript im Format [User]: ... / [KI]: ... - aktualisiert sich laufend waehrend des Gesprächs.</value>
+  </data>
+</root>
