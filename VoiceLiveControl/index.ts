@@ -74,6 +74,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private chatMessages: ChatMessage[] = [];
     private chatOpen = false;
 
+    // ── Event-Log (Debug) ────────────────────────────────────────────────
+    private eventLogEntries: string[] = [];
+    private eventLogOpen = true;
+    private eventLogEl!: HTMLDivElement;
+    private eventLogToggleBtn!: HTMLButtonElement;
+    private loggedInit = false;
+
     // ── Konfiguration (aus Power Apps Properties) ────────────────────────
     private authMode = 'APIKey';
     private apiKey = '';
@@ -81,6 +88,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private endpoint = '';
     private modelName = '';
     private systemPrompt = '';
+    private agentId = '';
+    private agentProjectName = '';
+    private tokenEndpoint = '';
+    private proxyKey = '';
+    /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
+    private fetchedToken = '';
+
+    // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
+    private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://test-speechlive-mcp.services.ai.azure.com';
+    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground-agent-v3';
+    private static readonly DEFAULT_AGENT_PROJECT     = 'proj-default';
+    private static readonly DEFAULT_AGENT_AUTH_MODE   = 'OAuthToken';
+    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
+    private static readonly DEFAULT_PROXY_KEY         = 'qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057';
 
     /** Standard-System-Prompt für den Außendienst-Assistenten. */
     private static readonly DEFAULT_SYSTEM_PROMPT = [
@@ -135,11 +156,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     <span class="ai-voice-status-dot"></span>
                     <span class="ai-voice-status-header">Nicht verbunden</span>
                 </div>
-                <button class="ai-chat-toggle" title="Chat-Transkript anzeigen">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                    </svg>
-                </button>
+                <div style="display:flex;gap:6px">
+                    <button class="ai-chat-toggle" title="Chat-Transkript anzeigen">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                    </button>
+                    <!-- <button class="ai-log-toggle" title="Event-Log" style="background:none;border:1px solid #555;color:#aaa;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:11px;line-height:1.4">LOG</button> -->
+                </div>
             </div>
             <div class="ai-voice-orb-area">
                 <div class="ai-voice-orb-wrapper">
@@ -171,6 +195,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-config-warning">&#x26A0; APIKey, Endpoint und ModelName m&#xFC;ssen konfiguriert sein</div>
             </div>
+            <!-- <div class="ai-event-log" style="display:block;position:relative;background:#111;color:#0f0;font-family:monospace;font-size:10px;padding:6px 8px;overflow-y:auto;max-height:140px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333;flex-shrink:0">Warte auf Events...</div> -->
         `;
 
         this.orbEl = this.container.querySelector('.ai-voice-orb') as HTMLDivElement;
@@ -181,28 +206,53 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.chatToggleBtn = this.container.querySelector('.ai-chat-toggle') as HTMLButtonElement;
         this.chatPanel = this.container.querySelector('.ai-chat-panel') as HTMLDivElement;
         this.chatMessagesEl = this.container.querySelector('.ai-chat-messages') as HTMLDivElement;
+        // this.eventLogEl = this.container.querySelector('.ai-event-log') as HTMLDivElement;
+        // this.eventLogToggleBtn = this.container.querySelector('.ai-log-toggle') as HTMLButtonElement;
 
         this.chatToggleBtn.addEventListener('click', () => this.toggleChat());
+        // this.eventLogToggleBtn.addEventListener('click', () => this.toggleEventLog());
         this.container.className = 'ai-voice-container state-idle';
     }
 
     public updateView(context: ComponentFramework.Context<IInputs>): void {
-        this.authMode = context.parameters.AuthMode.raw ?? 'APIKey';
-        this.apiKey = context.parameters.APIKey.raw ?? '';
-        this.token = context.parameters.Token.raw ?? '';
-        this.endpoint = context.parameters.Endpoint.raw ?? '';
-        this.modelName = context.parameters.ModelName.raw ?? '';
-        this.systemPrompt = context.parameters.SystemPrompt.raw ?? '';
+        // PCF-Testharnisch liefert "val" als Platzhalter für alle Properties –
+        // in diesem Fall greifen die eingebauten Defaults.
+        const prop = (raw: string | null | undefined, def: string): string =>
+            (raw && raw !== 'val' && raw !== 'undefined') ? raw : def;
+        const propRaw = (raw: string | null | undefined): string =>
+            (raw && raw !== 'val' && raw !== 'undefined') ? raw : '';
 
-        const hasBase = !!(this.endpoint && this.modelName);
+        this.authMode         = prop(context.parameters.AuthMode.raw,         VoiceLiveControl.DEFAULT_AGENT_AUTH_MODE);
+        this.apiKey           = propRaw(context.parameters.APIKey.raw);
+        this.token            = propRaw(context.parameters.Token.raw);
+        this.endpoint         = prop(context.parameters.Endpoint.raw,         VoiceLiveControl.DEFAULT_AGENT_ENDPOINT);
+        this.modelName        = propRaw(context.parameters.ModelName.raw);
+        this.systemPrompt     = propRaw(context.parameters.SystemPrompt.raw);
+        this.agentId          = prop(context.parameters.AgentId.raw,          VoiceLiveControl.DEFAULT_AGENT_ID);
+        this.agentProjectName = prop(context.parameters.AgentProjectName.raw, VoiceLiveControl.DEFAULT_AGENT_PROJECT);
+        this.tokenEndpoint    = prop(context.parameters.TokenEndpoint.raw,    VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT);
+        this.proxyKey         = prop(context.parameters.ProxyKey.raw,         VoiceLiveControl.DEFAULT_PROXY_KEY);
+
+        const isAgentMode = !!this.agentId;
         let configured = false;
         let warning = '';
 
-        if (this.authMode === 'OAuthToken') {
-            configured = hasBase && !!this.token;
+        if (!this.loggedInit) {
+            this.loggedInit = true;
+            this.log(`Init: agentMode=${isAgentMode}, endpoint=${this.endpoint}`);
+            this.log(`agentId=${this.agentId}, tokenEndpoint=${this.tokenEndpoint}`);
+        }
+
+        if (isAgentMode) {
+            // Token kommt entweder direkt als Property oder wird zur Laufzeit
+            // vom TokenEndpoint geholt (GET /api/voice-live/token)
+            configured = !!(this.token || this.tokenEndpoint);
+            warning = '\u26A0 Token fehlt \u2013 TokenEndpoint setzen oder OAuth-Token direkt übergeben';
+        } else if (this.authMode === 'OAuthToken') {
+            configured = !!(this.endpoint && this.modelName && this.token);
             warning = '\u26A0 Token, Endpoint und ModelName m\u00FCssen konfiguriert sein (AuthMode: OAuthToken)';
         } else {
-            configured = hasBase && !!this.apiKey;
+            configured = !!(this.endpoint && this.modelName && this.apiKey);
             warning = '\u26A0 APIKey, Endpoint und ModelName m\u00FCssen konfiguriert sein (AuthMode: APIKey)';
         }
 
@@ -214,8 +264,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         const isActive = context.parameters.Connected.raw === true;
         if (isActive !== this.previousIsActive) {
             this.previousIsActive = isActive;
+            this.log(`Connected=${isActive}, configured=${configured}, state=${this.controlState}`);
             if (isActive && configured && this.controlState === 'idle') {
                 void this.startSession();
+            } else if (isActive && !configured) {
+                this.log('FEHLER: Nicht konfiguriert – kein Token/Endpoint vorhanden');
             } else if (!isActive && this.controlState !== 'idle') {
                 this.stopSession();
             }
@@ -261,69 +314,106 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
      *   3. Startet das Mikrofon
      *
      * Die URL wird aus dem Endpoint zusammengebaut:
-     *   wss://{host}/voice-live/realtime?api-version=2025-10-01&model=...&api-key=...
+     *   Agent-Modus:  wss://{proxyHost}/api/voice-live/ws?key=...&agent-id=...&agent-project-name=...  (WebSocket-Proxy)
+     *   Direct-Modus: wss://{host}/voice-live/realtime?api-version=...&model=...&api-key=|access_token=...
      */
+    /** Holt einen frischen Agent-Access-Token vom Backend-Endpoint. */
+    private async fetchAgentToken(): Promise<string> {
+        const url = `${this.tokenEndpoint.replace(/\/$/, '')}/api/voice-live/token`;
+        const headers: Record<string, string> = {};
+        if (this.proxyKey) headers['X-Proxy-Key'] = this.proxyKey;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) throw new Error(`Token-Endpoint Fehler ${resp.status}`);
+        const data = await resp.json() as { token: string };
+        if (!data.token) throw new Error('Token-Endpoint hat kein token-Feld zurückgegeben');
+        return data.token;
+    }
+
     private async startSession(): Promise<void> {
-        const hasAuth = this.authMode === 'OAuthToken' ? !!this.token : !!this.apiKey;
-        if (!hasAuth || !this.endpoint || !this.modelName) return;
+        const isAgentMode = !!this.agentId;
+
+        if (isAgentMode) {
+            if (!this.endpoint || !this.agentId || !this.agentProjectName) return;
+            if (!this.token && !this.tokenEndpoint) return;
+        } else {
+            const hasAuth = this.authMode === 'OAuthToken' ? !!this.token : !!this.apiKey;
+            if (!hasAuth || !this.endpoint || !this.modelName) return;
+        }
 
         this.setState('connecting');
 
         try {
-            const host = this.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
-            const authParam = this.authMode === 'OAuthToken'
-                ? `&access_token=${encodeURIComponent(this.token)}`
-                : `&api-key=${encodeURIComponent(this.apiKey)}`;
-            const wsUrl = [
-                `wss://${host}/voice-live/realtime`,
-                `?api-version=2025-10-01`,
-                `&model=${encodeURIComponent(this.modelName)}`,
-                authParam,
-            ].join('');
+            let wsUrl: string;
+
+            if (isAgentMode) {
+                // Agent-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
+                // (Authorization: Bearer Header – Browser-WebSocket kann das nicht selbst setzen)
+                const proxyHost = this.tokenEndpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                wsUrl = `wss://${proxyHost}/api/voice-live/ws` +
+                        `?key=${encodeURIComponent(this.proxyKey)}` +
+                        `&agent-name=${encodeURIComponent(this.agentId)}` +
+                        `&agent-project-name=${encodeURIComponent(this.agentProjectName)}`;
+            } else {
+                const host = this.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                const authParam = this.authMode === 'OAuthToken'
+                    ? `&access_token=${encodeURIComponent(this.token)}`
+                    : `&api-key=${encodeURIComponent(this.apiKey)}`;
+                wsUrl = [
+                    `wss://${host}/voice-live/realtime`,
+                    `?api-version=2026-01-01-preview`,
+                    `&model=${encodeURIComponent(this.modelName)}`,
+                    authParam,
+                ].join('');
+            }
 
             this.ws = new WebSocket(wsUrl);
+            this.log(`WebSocket öffnet: wss://${wsUrl.split('//')[1]?.split('?')[0] ?? '?'}`);
 
             this.ws.onopen = () => {
+                this.log('WebSocket geöffnet, sende session.update...');
                 this.transcriptText = '';
                 this.currentAiTranscript = '';
                 this.currentUserTranscript = '';
                 this.clearChat();
 
-                const prompt = this.systemPrompt || VoiceLiveControl.DEFAULT_SYSTEM_PROMPT;
-
-                this.sendJson({
-                    type: 'session.update',
-                    session: {
-                        modalities: ['text', 'audio'],
-                        voice: {
-                            type: 'azure-standard',
-                            name: 'de-DE-Florian:DragonHDLatestNeural',
-                        },
-                        input_audio_format: 'pcm16',
-                        output_audio_format: 'pcm16',
-                        input_audio_sampling_rate: 24000,
-                        turn_detection: {
-                            type: 'azure_semantic_vad_multilingual',
-                            threshold: 0.5,
-                            prefix_padding_ms: 300,
-                            silence_duration_ms: 500,
-                            languages: ['de'],
-                            remove_filler_words: true,
-                        },
-                        input_audio_noise_reduction: {
-                            type: 'azure_deep_noise_suppression',
-                        },
-                        input_audio_echo_cancellation: {
-                            type: 'server_echo_cancellation',
-                        },
-                        input_audio_transcription: {
-                            model: 'azure-speech',
-                            language: 'de',
-                        },
-                        temperature: 0.6,
-                        instructions: prompt,
+                // Im Agent-Modus keine instructions senden – der Agent hat seinen eigenen System-Prompt
+                const sessionPayload: Record<string, unknown> = {
+                    modalities: ['text', 'audio'],
+                    voice: {
+                        type: 'azure-standard',
+                        name: 'de-DE-Florian:DragonHDLatestNeural',
                     },
-                });
+                    input_audio_format: 'pcm16',
+                    output_audio_format: 'pcm16',
+                    input_audio_sampling_rate: 24000,
+                    turn_detection: {
+                        type: 'azure_semantic_vad_multilingual',
+                        threshold: 0.5,
+                        prefix_padding_ms: 300,
+                        silence_duration_ms: 500,
+                        languages: ['de'],
+                        remove_filler_words: true,
+                    },
+                    input_audio_noise_reduction: {
+                        type: 'azure_deep_noise_suppression',
+                    },
+                    input_audio_echo_cancellation: {
+                        type: 'server_echo_cancellation',
+                    },
+                    input_audio_transcription: {
+                        model: 'azure-speech',
+                        language: 'de',
+                    },
+                };
+
+                if (!isAgentMode) {
+                    const prompt = this.systemPrompt || VoiceLiveControl.DEFAULT_SYSTEM_PROMPT;
+                    sessionPayload['instructions'] = prompt;
+                    sessionPayload['temperature'] = 0.6;
+                }
+
+                this.sendJson({ type: 'session.update', session: sessionPayload });
+                this.log('session.update gesendet, starte Mikrofon...');
                 void this.startMicrophone();
                 this.setState('listening');
             };
@@ -336,18 +426,26 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             };
 
             this.ws.onerror = () => {
-                this.setState('error', 'Verbindung fehlgeschlagen \u2013 Endpoint oder API-Key pr\u00fcfen');
-                this.cleanup();
+                // Nicht cleanup() aufrufen – onclose feuert immer danach und hat den Close-Code
+                this.log('WebSocket onerror ausgelöst – warte auf onclose für Details...');
             };
 
             this.ws.onclose = (event: CloseEvent) => {
-                if (this.controlState === 'idle' || this.controlState === 'error') return;
+                this.log(`WebSocket geschlossen: Code=${event.code} Reason="${event.reason || '(kein)'}"`);
+                const wasActive = this.controlState !== 'idle' && this.controlState !== 'error';
                 const reason = this.closeCodeToMessage(event.code, event.reason);
                 this.cleanup();
-                this.setState('error', reason);
+                if (wasActive) {
+                    this.setState('error', reason);
+                } else {
+                    // Auch bei onerror-Pfad: Fehlermeldung setzen
+                    this.setState('error', reason || 'WebSocket-Fehler – Endpoint oder Token prüfen');
+                }
             };
-        } catch {
-            this.setState('error', 'Unbekannter Fehler beim Verbindungsaufbau');
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.log(`startSession Fehler: ${msg}`);
+            this.setState('error', `Fehler: ${msg.slice(0, 80)}`);
         }
     }
 
@@ -618,6 +716,39 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    //  EVENT-LOG
+    // ══════════════════════════════════════════════════════════════════════
+
+    private log(_msg: string): void {
+        // const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+        // const entry = `[${ts}] ${_msg}`;
+        // this.eventLogEntries.push(entry);
+        // if (this.eventLogEntries.length > 200) this.eventLogEntries.shift();
+        // if (this.eventLogEl) {
+        //     this.eventLogEl.textContent = this.eventLogEntries.join('\n');
+        //     this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
+        // }
+        // console.log('[VoiceLive]', _msg);
+    }
+
+    private toggleEventLog(): void {
+        this.eventLogOpen = !this.eventLogOpen;
+        if (this.eventLogEl) {
+            if (this.eventLogOpen) {
+                this.eventLogEl.style.position = 'relative';
+                this.eventLogEl.style.maxHeight = '140px';
+                this.eventLogEl.style.zIndex = '';
+                this.eventLogEl.style.inset = '';
+            } else {
+                this.eventLogEl.style.position = 'absolute';
+                this.eventLogEl.style.inset = '0';
+                this.eventLogEl.style.maxHeight = '';
+                this.eventLogEl.style.zIndex = '100';
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     //  CHAT-PANEL – WhatsApp-Style Transkript-Anzeige
     // ══════════════════════════════════════════════════════════════════════
 
@@ -688,6 +819,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
 
     private stopSession(): void {
         this.cleanup();
+        this.fetchedToken = ''; // dynamisch geholten Token verwerfen
         this.setState('idle');
     }
 
