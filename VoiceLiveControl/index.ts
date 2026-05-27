@@ -68,7 +68,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private isCancelling = false;
 
     // ── Transkript ───────────────────────────────────────────────────────
-    private transcriptText = '';
+    private transcriptText = ''; 
+    private eventLogText = '';
     private currentAiTranscript = '';
     private currentUserTranscript = '';
 
@@ -84,14 +85,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private loggedInit = false;
 
     // ── Konfiguration (aus Power Apps Properties) ────────────────────────
-    private authMode = 'APIKey';
-    private apiKey = '';
-    private token = '';
-    private endpoint = '';
-    private modelName = '';
-    private systemPrompt = '';
     private agentId = '';
     private agentProjectName = '';
+    private agentendpoint = '';
     private tokenEndpoint = '';
     private proxyKey = '';
     /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
@@ -101,29 +97,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://test-speechlive-mcp.services.ai.azure.com';
     private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground-agent-v3';
     private static readonly DEFAULT_AGENT_PROJECT     = 'proj-default';
-    private static readonly DEFAULT_AGENT_AUTH_MODE   = 'OAuthToken';
     private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
     private static readonly DEFAULT_PROXY_KEY         = 'qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057';
-
-    /** Standard-System-Prompt für den Außendienst-Assistenten. */
-    private static readonly DEFAULT_SYSTEM_PROMPT = [
-        'Du bist ein professioneller Außendienst-Assistent für Servicetechniker und Berater.',
-        'Du sprichst Deutsch und antwortest knapp, sachlich und präzise.',
-        '',
-        'GESPRÄCHSFÜHRUNG:',
-        '- Begrüße den User kurz und frage, wie du helfen kannst.',
-        '- Wenn der User ein Protokoll, einen Bericht oder eine Dokumentation diktieren möchte,',
-        '  wechsle in den Zuhör-Modus: Antworte dann NUR mit minimalen Bestätigungen',
-        '  wie "Verstanden", "Mhm", "Weiter" oder "Notiert".',
-        '- Unterbrich den User NIEMALS während er diktiert.',
-        '- Wenn der User länger schweigt, frage kurz: "Möchtest du noch etwas ergänzen?"',
-        '- Wenn der User sagt er ist fertig, fasse das Gesagte strukturiert zusammen.',
-        '',
-        'STIL:',
-        '- Kurze Sätze, kein Smalltalk.',
-        '- Verwende Fachsprache wenn der User sie benutzt.',
-        '- Keine Floskeln wie "Natürlich!" oder "Gerne!".',
-    ].join('\n');
 
     // ── DOM-Referenzen ───────────────────────────────────────────────────
     private orbEl!: HTMLDivElement;
@@ -163,8 +138,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                         </svg>
-                    </button>
-                    <button class="ai-log-toggle" title="Event-Log" style="background:none;border:1px solid #555;color:#aaa;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:11px;line-height:1.4">LOG</button>
+                    </button>                    
                 </div>
             </div>
             <div class="ai-voice-orb-area">
@@ -195,9 +169,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             </div>
             <div class="ai-voice-footer">
                 <p class="ai-voice-status-text">Inaktiv</p>
-                <div class="ai-voice-config-warning">&#x26A0; APIKey, Endpoint und ModelName m&#xFC;ssen konfiguriert sein</div>
+                <div class="ai-voice-config-warning"></div>
             </div>
-            <div class="ai-event-log" style="display:block;position:relative;background:#111;color:#0f0;font-family:monospace;font-size:10px;padding:6px 8px;overflow-y:auto;max-height:140px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333;flex-shrink:0">Warte auf Events...</div>
         `;
 
         this.orbEl = this.container.querySelector('.ai-voice-orb') as HTMLDivElement;
@@ -208,11 +181,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.chatToggleBtn = this.container.querySelector('.ai-chat-toggle') as HTMLButtonElement;
         this.chatPanel = this.container.querySelector('.ai-chat-panel') as HTMLDivElement;
         this.chatMessagesEl = this.container.querySelector('.ai-chat-messages') as HTMLDivElement;
-        this.eventLogEl = this.container.querySelector('.ai-event-log') as HTMLDivElement;
-        this.eventLogToggleBtn = this.container.querySelector('.ai-log-toggle') as HTMLButtonElement;
 
         this.chatToggleBtn.addEventListener('click', () => this.toggleChat());
-        this.eventLogToggleBtn.addEventListener('click', () => this.toggleEventLog());
         this.container.className = 'ai-voice-container state-idle';
     }
 
@@ -224,39 +194,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         const propRaw = (raw: string | null | undefined): string =>
             (raw && raw !== 'val' && raw !== 'undefined') ? raw : '';
 
-        this.authMode         = prop(context.parameters.AuthMode.raw,         VoiceLiveControl.DEFAULT_AGENT_AUTH_MODE);
-        this.apiKey           = propRaw(context.parameters.APIKey.raw);
-        this.token            = propRaw(context.parameters.Token.raw);
-        this.endpoint         = prop(context.parameters.Endpoint.raw,         VoiceLiveControl.DEFAULT_AGENT_ENDPOINT);
-        this.modelName        = propRaw(context.parameters.ModelName.raw);
-        this.systemPrompt     = propRaw(context.parameters.SystemPrompt.raw);
         this.agentId          = prop(context.parameters.AgentId.raw,          VoiceLiveControl.DEFAULT_AGENT_ID);
         this.agentProjectName = prop(context.parameters.AgentProjectName.raw, VoiceLiveControl.DEFAULT_AGENT_PROJECT);
         this.tokenEndpoint    = prop(context.parameters.TokenEndpoint.raw,    VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT);
         this.proxyKey         = prop(context.parameters.ProxyKey.raw,         VoiceLiveControl.DEFAULT_PROXY_KEY);
 
-        const isAgentMode = !!this.agentId;
-        let configured = false;
-        let warning = '';
-
         if (!this.loggedInit) {
             this.loggedInit = true;
-            this.log(`Init: agentMode=${isAgentMode}, endpoint=${this.endpoint}`);
-            this.log(`agentId=${this.agentId}, tokenEndpoint=${this.tokenEndpoint}`);
+            this.log(`Init: agentId=${this.agentId}, tokenEndpoint=${this.tokenEndpoint}`);
         }
 
-        if (isAgentMode) {
-            // Token kommt entweder direkt als Property oder wird zur Laufzeit
-            // vom TokenEndpoint geholt (GET /api/voice-live/token)
-            configured = !!(this.token || this.tokenEndpoint);
-            warning = '\u26A0 Token fehlt \u2013 TokenEndpoint setzen oder OAuth-Token direkt übergeben';
-        } else if (this.authMode === 'OAuthToken') {
-            configured = !!(this.endpoint && this.modelName && this.token);
-            warning = '\u26A0 Token, Endpoint und ModelName m\u00FCssen konfiguriert sein (AuthMode: OAuthToken)';
-        } else {
-            configured = !!(this.endpoint && this.modelName && this.apiKey);
-            warning = '\u26A0 APIKey, Endpoint und ModelName m\u00FCssen konfiguriert sein (AuthMode: APIKey)';
-        }
+        const configured = !!(this.agentId && this.agentProjectName && this.tokenEndpoint && this.proxyKey);
+        const warning = '\u26A0 Agent-Konfiguration (ID, Projekt, Token-Endpoint, Proxy-Key) ist unvollst\u00e4ndig.';
 
         if (this.configWarningEl) {
             this.configWarningEl.textContent = warning;
@@ -332,41 +281,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     }
 
     private async startSession(): Promise<void> {
-        const isAgentMode = !!this.agentId;
-
-        if (isAgentMode) {
-            if (!this.endpoint || !this.agentId || !this.agentProjectName) return;
-            if (!this.token && !this.tokenEndpoint) return;
-        } else {
-            const hasAuth = this.authMode === 'OAuthToken' ? !!this.token : !!this.apiKey;
-            if (!hasAuth || !this.endpoint || !this.modelName) return;
-        }
+        if (!this.agentId || !this.agentProjectName || !this.tokenEndpoint || !this.proxyKey) return;
 
         this.setState('connecting');
 
         try {
-            let wsUrl: string;
-
-            if (isAgentMode) {
-                // Agent-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
-                // (Authorization: Bearer Header – Browser-WebSocket kann das nicht selbst setzen)
-                const proxyHost = this.tokenEndpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
-                wsUrl = `wss://${proxyHost}/api/voice-live/ws` +
-                        `?key=${encodeURIComponent(this.proxyKey)}` +
-                        `&agent-name=${encodeURIComponent(this.agentId)}` +
-                        `&agent-project-name=${encodeURIComponent(this.agentProjectName)}`;
-            } else {
-                const host = this.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
-                const authParam = this.authMode === 'OAuthToken'
-                    ? `&access_token=${encodeURIComponent(this.token)}`
-                    : `&api-key=${encodeURIComponent(this.apiKey)}`;
-                wsUrl = [
-                    `wss://${host}/voice-live/realtime`,
-                    `?api-version=2026-01-01-preview`,
-                    `&model=${encodeURIComponent(this.modelName)}`,
-                    authParam,
-                ].join('');
-            }
+            // Agent-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
+            const proxyHost = this.tokenEndpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
+            const wsUrl = `wss://${proxyHost}/api/voice-live/ws` +
+                    `?key=${encodeURIComponent(this.proxyKey)}` +
+                    `&agent-name=${encodeURIComponent(this.agentId)}` +
+                    `&agent-project-name=${encodeURIComponent(this.agentProjectName)}`;
 
             this.ws = new WebSocket(wsUrl);
             this.log(`WebSocket öffnet: wss://${wsUrl.split('//')[1]?.split('?')[0] ?? '?'}`);
@@ -377,8 +302,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 this.currentAiTranscript = '';
                 this.currentUserTranscript = '';
                 this.clearChat();
-
-                // Im Agent-Modus keine instructions senden – der Agent hat seinen eigenen System-Prompt
                 const sessionPayload: Record<string, unknown> = {
                     modalities: ['text', 'audio'],
                     voice: {
@@ -409,12 +332,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                         language: 'de',
                     },
                 };
-
-                if (!isAgentMode) {
-                    const prompt = this.systemPrompt || VoiceLiveControl.DEFAULT_SYSTEM_PROMPT;
-                    sessionPayload['instructions'] = prompt;
-                    sessionPayload['temperature'] = 0.6;
-                }
 
                 this.sendJson({ type: 'session.update', session: sessionPayload });
                 this.log('session.update gesendet, starte Mikrofon...');
@@ -789,33 +706,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     //  EVENT-LOG
     // ══════════════════════════════════════════════════════════════════════
 
-    private log(msg: string): void {
+    private log(msg: string): void { 
         const ts = new Date().toISOString().slice(11, 23);
         const entry = `[${ts}] ${msg}`;
-        this.eventLogEntries.push(entry);
-        if (this.eventLogEntries.length > 200) this.eventLogEntries.shift();
-        if (this.eventLogEl) {
-            this.eventLogEl.textContent = this.eventLogEntries.join('\n');
-            this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
-        }
+        this.eventLogText += entry + '\n';
         console.log('[VoiceLive]', msg);
-    }
-
-    private toggleEventLog(): void {
-        this.eventLogOpen = !this.eventLogOpen;
-        if (this.eventLogEl) {
-            if (this.eventLogOpen) {
-                this.eventLogEl.style.position = 'relative';
-                this.eventLogEl.style.maxHeight = '140px';
-                this.eventLogEl.style.zIndex = '';
-                this.eventLogEl.style.inset = '';
-            } else {
-                this.eventLogEl.style.position = 'absolute';
-                this.eventLogEl.style.inset = '0';
-                this.eventLogEl.style.maxHeight = '';
-                this.eventLogEl.style.zIndex = '100';
-            }
-        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -889,7 +784,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
 
     private stopSession(): void {
         this.cleanup();
-        this.fetchedToken = ''; // dynamisch geholten Token verwerfen
         this.setState('idle');
     }
 
@@ -929,6 +823,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             Connected: this.controlState !== 'idle' && this.controlState !== 'error',
             ConnectionStatus: this.controlState,
             Transcript: this.transcriptText,
+            EventLog: this.eventLogText,
         };
     }
 

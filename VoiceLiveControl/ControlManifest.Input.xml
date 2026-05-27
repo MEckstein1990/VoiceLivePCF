@@ -5,22 +5,15 @@
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
     </external-service-usage>
-    <property name="AuthMode" display-name-key="AuthMode_Display" description-key="AuthMode_Desc" of-type="Enum" usage="input" required="true" default-value="APIKey">
-      <value name="APIKey" display-name-key="AuthMode_APIKey_Display">APIKey</value>
-      <value name="OAuthToken" display-name-key="AuthMode_OAuthToken_Display">OAuthToken</value>
-    </property>
-    <property name="APIKey" display-name-key="VLC_APIKey_Display" description-key="VLC_APIKey_Desc" of-type="SingleLine.Text" usage="input" required="false" />
-    <property name="Token" display-name-key="Token_Display" description-key="Token_Desc" of-type="SingleLine.Text" usage="input" required="false" />
-    <property name="Endpoint" display-name-key="VLC_Endpoint_Display" description-key="VLC_Endpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
-    <property name="ModelName" display-name-key="ModelName_Display" description-key="ModelName_Desc" of-type="SingleLine.Text" usage="input" required="true" />
-    <property name="SystemPrompt" display-name-key="VLC_SystemPrompt_Display" description-key="VLC_SystemPrompt_Desc" of-type="Multiple" usage="input" required="false" />
-    <property name="AgentId" display-name-key="AgentId_Display" description-key="AgentId_Desc" of-type="SingleLine.Text" usage="input" required="false" />
-    <property name="AgentProjectName" display-name-key="AgentProjectName_Display" description-key="AgentProjectName_Desc" of-type="SingleLine.Text" usage="input" required="false" />
-    <property name="TokenEndpoint" display-name-key="TokenEndpoint_Display" description-key="TokenEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="false" />
-    <property name="ProxyKey" display-name-key="ProxyKey_Display" description-key="ProxyKey_Desc" of-type="SingleLine.Text" usage="input" required="false" />
+    
+    <property name="AgentId" display-name-key="AgentId_Display" description-key="AgentId_Desc" of-type="SingleLine.Text" usage="input" required="true" />
+    <property name="AgentProjectName" display-name-key="AgentProjectName_Display" description-key="AgentProjectName_Desc" of-type="SingleLine.Text" usage="input" required="true" />
+    <property name="TokenEndpoint" display-name-key="TokenEndpoint_Display" description-key="TokenEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
+    <property name="ProxyKey" display-name-key="ProxyKey_Display" description-key="ProxyKey_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="Connected" display-name-key="Connected_Display" description-key="Connected_Desc" of-type="TwoOptions" usage="bound" required="false" />
     <property name="ConnectionStatus" display-name-key="VLC_ConnectionStatus_Display" description-key="VLC_ConnectionStatus_Desc" of-type="SingleLine.Text" usage="output" />
     <property name="Transcript" display-name-key="VLC_Transcript_Display" description-key="VLC_Transcript_Desc" of-type="Multiple" usage="output" />
+    <property name="EventLog" display-name-key="EventLog_Display" description-key="EventLog_Desc" of-type="Multiple" usage="output" />
     <resources>
       <code path="index.ts" order="1"/>
       <css path="css/AiVoiceControl.css" order="1" />
