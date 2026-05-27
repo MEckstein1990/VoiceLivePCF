@@ -64,6 +64,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private nextPlayTime = 0;
     private controlState: ControlState = 'idle';
     private previousIsActive: boolean | null = null;
+    private activeSources: AudioBufferSourceNode[] = [];
+    private isCancelling = false;
 
     // ── Transkript ───────────────────────────────────────────────────────
     private transcriptText = '';
@@ -162,7 +164,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                         </svg>
                     </button>
-                    <!-- <button class="ai-log-toggle" title="Event-Log" style="background:none;border:1px solid #555;color:#aaa;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:11px;line-height:1.4">LOG</button> -->
+                    <button class="ai-log-toggle" title="Event-Log" style="background:none;border:1px solid #555;color:#aaa;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:11px;line-height:1.4">LOG</button>
                 </div>
             </div>
             <div class="ai-voice-orb-area">
@@ -195,7 +197,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-config-warning">&#x26A0; APIKey, Endpoint und ModelName m&#xFC;ssen konfiguriert sein</div>
             </div>
-            <!-- <div class="ai-event-log" style="display:block;position:relative;background:#111;color:#0f0;font-family:monospace;font-size:10px;padding:6px 8px;overflow-y:auto;max-height:140px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333;flex-shrink:0">Warte auf Events...</div> -->
+            <div class="ai-event-log" style="display:block;position:relative;background:#111;color:#0f0;font-family:monospace;font-size:10px;padding:6px 8px;overflow-y:auto;max-height:140px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333;flex-shrink:0">Warte auf Events...</div>
         `;
 
         this.orbEl = this.container.querySelector('.ai-voice-orb') as HTMLDivElement;
@@ -206,11 +208,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.chatToggleBtn = this.container.querySelector('.ai-chat-toggle') as HTMLButtonElement;
         this.chatPanel = this.container.querySelector('.ai-chat-panel') as HTMLDivElement;
         this.chatMessagesEl = this.container.querySelector('.ai-chat-messages') as HTMLDivElement;
-        // this.eventLogEl = this.container.querySelector('.ai-event-log') as HTMLDivElement;
-        // this.eventLogToggleBtn = this.container.querySelector('.ai-log-toggle') as HTMLButtonElement;
+        this.eventLogEl = this.container.querySelector('.ai-event-log') as HTMLDivElement;
+        this.eventLogToggleBtn = this.container.querySelector('.ai-log-toggle') as HTMLButtonElement;
 
         this.chatToggleBtn.addEventListener('click', () => this.toggleChat());
-        // this.eventLogToggleBtn.addEventListener('click', () => this.toggleEventLog());
+        this.eventLogToggleBtn.addEventListener('click', () => this.toggleEventLog());
         this.container.className = 'ai-voice-container state-idle';
     }
 
@@ -390,9 +392,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                         type: 'azure_semantic_vad_multilingual',
                         threshold: 0.5,
                         prefix_padding_ms: 300,
-                        silence_duration_ms: 500,
+                        silence_duration_ms: 800, // Längere Pause für Diktat im Auto
                         languages: ['de'],
-                        remove_filler_words: true,
+                        remove_filler_words: false, // Deaktiviert, da es perfektes Echo-Timing erfordert
+                        interrupt_response: true, // Wichtig für Barge-In
+                        auto_truncate: false,     // Manuelles, client-seitiges Abbruch-Handling ist robuster
                     },
                     input_audio_noise_reduction: {
                         type: 'azure_deep_noise_suppression',
@@ -414,6 +418,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
 
                 this.sendJson({ type: 'session.update', session: sessionPayload });
                 this.log('session.update gesendet, starte Mikrofon...');
+
                 void this.startMicrophone();
                 this.setState('listening');
             };
@@ -473,12 +478,45 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
      *   - warning (informational, session bleibt offen)
      */
     private handleServerEvent(msg: ServerEvent): void {
+        this.log(`← ${msg.type}`);
         switch (msg.type) {
-            case 'input_audio_buffer.speech_started':
+            case 'input_audio_buffer.speech_started': {
+                this.log("User unterbricht (Barge-In) - Starte manuellen Abbruch...");
+
+                // 1. Client-Audio SOFORT hart stoppen (wichtig für die UX im Auto!)
+                if (this.activeSources.length > 0) {
+                    for (const source of this.activeSources) {
+                        try {
+                            source.onended = null;
+                            source.stop();
+                        } catch (e) { /* ignore */ }
+                    }
+                    this.activeSources = [];
+                }
+
+                // 2. Timeline für die nächste Response zurücksetzen
+                if (this.audioContext) {
+                    this.nextPlayTime = this.audioContext.currentTime;
+                }
+
                 this.currentUserTranscript = '';
                 this.lastUserBubbleEl = null;
                 this.setState('user-speaking');
+
+                // 3. Den Server SICHER abbrechen
+                if (this.ws?.readyState === WebSocket.OPEN &&
+                    this.controlState === 'ai-speaking' &&
+                    !this.isCancelling) {
+
+                    this.isCancelling = true;
+                    this.log("Sende response.cancel an den Server");
+                    this.sendJson({ type: 'response.cancel' });
+
+                    // Fail-Safe: Wenn der Server nicht antwortet, geben wir den State nach 2s wieder frei
+                    setTimeout(() => { this.isCancelling = false; }, 2000);
+                }
                 break;
+            }
             case 'input_audio_buffer.speech_stopped':
                 this.setState('listening');
                 break;
@@ -490,9 +528,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 this.setState('ai-speaking');
                 break;
             case 'response.audio.delta':
-                if (msg.delta) this.playAudioDelta(msg.delta);
+                if (msg.delta && this.controlState === 'ai-speaking') this.playAudioDelta(msg.delta);
                 break;
             case 'response.done':
+                this.log("Server meldet response.done.");
+
+                // Lock lösen
+                this.isCancelling = false;
+
                 if (this.currentAiTranscript) {
                     this.transcriptText += `[KI]: ${this.currentAiTranscript}\n`;
                     const lastAi = this.chatMessages.slice().reverse().find((m: ChatMessage) => m.role === 'ai');
@@ -502,7 +545,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     this.notifyOutputChanged();
                 }
                 this.lastAiBubbleEl = null;
-                if (this.controlState === 'ai-speaking') this.setState('listening');
+
+                // Wichtig: Nur auf 'listening' schalten, wenn der User nicht gerade angefangen hat zu sprechen!
+                if (this.controlState === 'ai-speaking') {
+                    this.setState('listening');
+                }
                 break;
 
             // ── Transkriptions-Events ────────────────────────────────────
@@ -559,9 +606,25 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 // Intentionally ignored – warnings don't interrupt the session
                 break;
 
-            case 'error':
-                this.setState('error', msg.error?.message ?? 'Serverfehler');
+            case 'error': {
+                const errMsg = msg.error?.message || 'Unbekannt';
+                
+
+                const errCode = (msg.error as Record<string, unknown>)?.code || 'Kein Code';
+                
+                this.log(`WARNUNG (Server Error): [${errCode}] ${errMsg}`);
+                
+                if (errMsg.includes('cancelled') || errMsg.includes('interrupted') || errCode === '1011') {
+                    this.log("Fehler als harmlose Race-Condition eingestuft. Ignoriere...");
+                    this.isCancelling = false; 
+                    break; 
+                }
+
+                if (this.ws?.readyState !== WebSocket.OPEN) {
+                    this.setState('error', errMsg);
+                }
                 break;
+            }
         }
     }
 
@@ -688,8 +751,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         source.buffer = audioBuffer;
         source.connect(this.audioContext.destination);
 
-        const startAt = Math.max(this.audioContext.currentTime, this.nextPlayTime);
+        const now = this.audioContext.currentTime;
+
+        const startAt = Math.max(now, this.nextPlayTime);
         source.start(startAt);
+        source.onended = () => {
+            const idx = this.activeSources.indexOf(source);
+            if (idx >= 0) this.activeSources.splice(idx, 1);
+        };
+        this.activeSources.push(source);
         this.nextPlayTime = startAt + audioBuffer.duration;
     }
 
@@ -719,16 +789,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     //  EVENT-LOG
     // ══════════════════════════════════════════════════════════════════════
 
-    private log(_msg: string): void {
-        // const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-        // const entry = `[${ts}] ${_msg}`;
-        // this.eventLogEntries.push(entry);
-        // if (this.eventLogEntries.length > 200) this.eventLogEntries.shift();
-        // if (this.eventLogEl) {
-        //     this.eventLogEl.textContent = this.eventLogEntries.join('\n');
-        //     this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
-        // }
-        // console.log('[VoiceLive]', _msg);
+    private log(msg: string): void {
+        const ts = new Date().toISOString().slice(11, 23);
+        const entry = `[${ts}] ${msg}`;
+        this.eventLogEntries.push(entry);
+        if (this.eventLogEntries.length > 200) this.eventLogEntries.shift();
+        if (this.eventLogEl) {
+            this.eventLogEl.textContent = this.eventLogEntries.join('\n');
+            this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
+        }
+        console.log('[VoiceLive]', msg);
     }
 
     private toggleEventLog(): void {
@@ -849,6 +919,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         }
         if (this.orbEl) this.orbEl.style.transform = '';
         this.vuBars.forEach(b => { b.style.height = '3px'; });
+
+        this.activeSources.forEach(s => { try { s.stop(); } catch { /* */ } });
+        this.activeSources = [];
     }
 
     public getOutputs(): IOutputs {
