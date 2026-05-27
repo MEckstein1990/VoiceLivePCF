@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="FoundryAgentService/FoundryAgentService.csproj" />
+  <Project Path="VoiceLiveSessionApi/VoiceLiveSessionApi.csproj" Id="e6092cf4-f571-4ed4-961f-87a5f93b863a" />
+</Solution>

@@ -1,0 +1,14 @@
+{
+  "name": "voice-live-session-api-browser-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:browser": "esbuild voice-live-browser-app.js --bundle --platform=browser --format=esm --outfile=voice-live-browser.bundle.js"
+  },
+  "dependencies": {
+    "@azure/ai-voicelive": "1.0.0-beta.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.5"
+  }
+}
