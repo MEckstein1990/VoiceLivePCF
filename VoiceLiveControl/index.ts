@@ -94,10 +94,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private fetchedToken = '';
 
     // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
-    private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://test-speechlive-mcp.services.ai.azure.com';
-    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground-agent-v3';
+    private static readonly DEFAULT_AGENT_ENDPOINT    = 'foundry-enbw-KoRa-AI-sc.ai.azure.com' //'https://test-speechlive-mcp.services.ai.azure.com';
+    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground' // 'dataverse-proxy-playground-agent-v3';
     private static readonly DEFAULT_AGENT_PROJECT     = 'proj-default';
-    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
+    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'func-voicelive-kora.azurewebsites.net' //'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
     private static readonly DEFAULT_PROXY_KEY         = 'qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057';
 
     // ── DOM-Referenzen ───────────────────────────────────────────────────
@@ -198,14 +198,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.agentProjectName = prop(context.parameters.AgentProjectName.raw, VoiceLiveControl.DEFAULT_AGENT_PROJECT);
         this.tokenEndpoint    = prop(context.parameters.TokenEndpoint.raw,    VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT);
         this.proxyKey         = prop(context.parameters.ProxyKey.raw,         VoiceLiveControl.DEFAULT_PROXY_KEY);
+        this.agentendpoint    = prop(context.parameters.AgentEndpoint.raw,    VoiceLiveControl.DEFAULT_AGENT_ENDPOINT);
 
         if (!this.loggedInit) {
             this.loggedInit = true;
-            this.log(`Init: agentId=${this.agentId}, tokenEndpoint=${this.tokenEndpoint}`);
+            this.log(`Init: agentId=${this.agentId}, endpoint=${this.agentendpoint}`);
         }
 
-        const configured = !!(this.agentId && this.agentProjectName && this.tokenEndpoint && this.proxyKey);
-        const warning = '\u26A0 Agent-Konfiguration (ID, Projekt, Token-Endpoint, Proxy-Key) ist unvollst\u00e4ndig.';
+        const configured = !!(this.agentId && this.agentProjectName && this.tokenEndpoint && this.proxyKey && this.agentendpoint);
+        const warning = '\u26A0 Agent-Konfiguration (ID, Projekt, Endpoint, Token-Endpoint, Proxy-Key) ist unvollst\u00e4ndig.';
 
         if (this.configWarningEl) {
             this.configWarningEl.textContent = warning;
@@ -281,7 +282,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     }
 
     private async startSession(): Promise<void> {
-        if (!this.agentId || !this.agentProjectName || !this.tokenEndpoint || !this.proxyKey) return;
+        if (!this.agentId || !this.agentProjectName || !this.tokenEndpoint || !this.proxyKey || !this.agentendpoint) return;
 
         this.setState('connecting');
 
@@ -290,8 +291,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             const proxyHost = this.tokenEndpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
             const wsUrl = `wss://${proxyHost}/api/voice-live/ws` +
                     `?key=${encodeURIComponent(this.proxyKey)}` +
-                    `&agent-name=${encodeURIComponent(this.agentId)}` +
-                    `&agent-project-name=${encodeURIComponent(this.agentProjectName)}`;
+                    `&agent-id=${encodeURIComponent(this.agentId)}` +
+                    `&agent-project-name=${encodeURIComponent(this.agentProjectName)}` +
+                    `&endpoint=${encodeURIComponent(this.agentendpoint)}`;
 
             this.ws = new WebSocket(wsUrl);
             this.log(`WebSocket öffnet: wss://${wsUrl.split('//')[1]?.split('?')[0] ?? '?'}`);
