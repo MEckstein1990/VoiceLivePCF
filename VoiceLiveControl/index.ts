@@ -31,7 +31,7 @@ import { IInputs, IOutputs } from "./generated/ManifestTypes";
  *                                        │
  *                                      error
  */
-type ControlState = 'idle' | 'connecting' | 'listening' | 'user-speaking' | 'ai-speaking' | 'error';
+type ControlState = 'idle' | 'connecting' | 'reconnecting' | 'listening' | 'user-speaking' | 'ai-speaking' | 'error';
 
 /** Typisierung für eingehende WebSocket-Nachrichten von Voice Live API. */
 interface ServerEvent {
@@ -67,6 +67,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private activeSources: AudioBufferSourceNode[] = [];
     private isCancelling = false;
 
+    // ── Reconnect ────────────────────────────────────────────────────────
+    private intentionalClose = false;
+    private reconnectAttempt = 0;
+    private static readonly MAX_RECONNECT_ATTEMPTS = 5;
+    private static readonly RECONNECT_BASE_DELAY_MS = 1500;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
     // ── Transkript ───────────────────────────────────────────────────────
     private transcriptText = ''; 
     private eventLogText = '';
@@ -94,11 +101,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private fetchedToken = '';
 
     // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
-    private static readonly DEFAULT_AGENT_ENDPOINT    = 'foundry-enbw-KoRa-AI-sc.ai.azure.com' //'https://test-speechlive-mcp.services.ai.azure.com';
-    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground' // 'dataverse-proxy-playground-agent-v3';
+    private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://test-speechlive-mcp.services.ai.azure.com'; //'https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com';
+    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground-agent-v3';// 'dataverse-proxy-agent';
     private static readonly DEFAULT_AGENT_PROJECT     = 'proj-default';
-    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'func-voicelive-kora.azurewebsites.net' //'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
+    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';//'https://func-voicelive-kora.azurewebsites.net';
     private static readonly DEFAULT_PROXY_KEY         = 'qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057';
+    
 
     // ── DOM-Referenzen ───────────────────────────────────────────────────
     private orbEl!: HTMLDivElement;
@@ -171,6 +179,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-config-warning"></div>
             </div>
+            <div class="ai-event-log">
+                <div class="ai-event-log-header">
+                    <span>Event Log</span>
+                    <div style="display:flex;gap:6px">
+                        <button class="ai-event-log-clear" title="Log leeren">✕</button>
+                        <button class="ai-event-log-toggle" title="Log ein-/ausklappen">▼</button>
+                    </div>
+                </div>
+                <div class="ai-event-log-body"></div>
+            </div>
         `;
 
         this.orbEl = this.container.querySelector('.ai-voice-orb') as HTMLDivElement;
@@ -182,7 +200,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.chatPanel = this.container.querySelector('.ai-chat-panel') as HTMLDivElement;
         this.chatMessagesEl = this.container.querySelector('.ai-chat-messages') as HTMLDivElement;
 
+        this.eventLogEl = this.container.querySelector('.ai-event-log-body') as HTMLDivElement;
+        this.eventLogToggleBtn = this.container.querySelector('.ai-event-log-toggle') as HTMLButtonElement;
+        const eventLogClearBtn = this.container.querySelector('.ai-event-log-clear') as HTMLButtonElement;
+
         this.chatToggleBtn.addEventListener('click', () => this.toggleChat());
+        this.eventLogToggleBtn.addEventListener('click', () => {
+            this.eventLogOpen = !this.eventLogOpen;
+            this.eventLogEl.style.display = this.eventLogOpen ? 'block' : 'none';
+            this.eventLogToggleBtn.textContent = this.eventLogOpen ? '\u25BC' : '\u25B6';
+        });
+        eventLogClearBtn.addEventListener('click', () => {
+            this.eventLogEntries = [];
+            this.eventLogEl.innerHTML = '';
+        });
         this.container.className = 'ai-voice-container state-idle';
     }
 
@@ -221,7 +252,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 void this.startSession();
             } else if (isActive && !configured) {
                 this.log('FEHLER: Nicht konfiguriert – kein Token/Endpoint vorhanden');
-            } else if (!isActive && this.controlState !== 'idle') {
+            } else if (!isActive && this.controlState !== 'idle' && this.controlState !== 'reconnecting') {
                 this.stopSession();
             }
         }
@@ -235,7 +266,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         if (['listening', 'user-speaking', 'ai-speaking'].includes(newState)) {
             classes.push('state-connected');
         }
-        if (['connecting', 'listening', 'user-speaking', 'ai-speaking'].includes(newState)) {
+        if (['connecting', 'reconnecting', 'listening', 'user-speaking', 'ai-speaking'].includes(newState)) {
             classes.push('state-active');
         }
         if (this.chatOpen) {
@@ -246,6 +277,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         const labels: Record<ControlState, { text: string; header: string }> = {
             idle:            { text: 'Inaktiv',              header: 'Nicht verbunden' },
             connecting:      { text: 'Verbinde\u2026',      header: 'Verbinde\u2026' },
+            reconnecting:    { text: `Verbindung wiederherstellen (${this.reconnectAttempt}/${VoiceLiveControl.MAX_RECONNECT_ATTEMPTS})\u2026`, header: 'Verbindung unterbrochen' },
             listening:       { text: 'Ich h\u00f6re zu\u2026', header: 'Verbunden (Voice Live)' },
             'user-speaking': { text: 'Du sprichst\u2026',   header: 'Verbunden (Voice Live)' },
             'ai-speaking':   { text: 'KI spricht\u2026',    header: 'Verbunden (Voice Live)' },
@@ -281,47 +313,58 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         return data.token;
     }
 
-    private async startSession(): Promise<void> {
+    private async startSession(isReconnect = false): Promise<void> {
         if (!this.agentId || !this.agentProjectName || !this.tokenEndpoint || !this.proxyKey || !this.agentendpoint) return;
 
-        this.setState('connecting');
+        this.intentionalClose = false;
+        if (!isReconnect) {
+            this.reconnectAttempt = 0;
+        }
+        this.setState(isReconnect ? 'reconnecting' : 'connecting');
 
         try {
-            // Agent-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
+            // Proxy-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
             const proxyHost = this.tokenEndpoint.replace(/^https?:\/\//, '').replace(/\/$/, '');
             const wsUrl = `wss://${proxyHost}/api/voice-live/ws` +
                     `?key=${encodeURIComponent(this.proxyKey)}` +
-                    `&agent-id=${encodeURIComponent(this.agentId)}` +
+                    `&agent-name=${encodeURIComponent(this.agentId)}` +
                     `&agent-project-name=${encodeURIComponent(this.agentProjectName)}` +
                     `&endpoint=${encodeURIComponent(this.agentendpoint)}`;
 
+            this.log(`WebSocket öffnet: wss://${proxyHost}/api/voice-live/ws`);
             this.ws = new WebSocket(wsUrl);
-            this.log(`WebSocket öffnet: wss://${wsUrl.split('//')[1]?.split('?')[0] ?? '?'}`);
 
             this.ws.onopen = () => {
-                this.log('WebSocket geöffnet, sende session.update...');
-                this.transcriptText = '';
-                this.currentAiTranscript = '';
-                this.currentUserTranscript = '';
-                this.clearChat();
+                this.log(isReconnect ? `WebSocket reconnected (Versuch ${this.reconnectAttempt})` : 'WebSocket geöffnet, sende session.update...');
+                this.reconnectAttempt = 0;
+                if (!isReconnect) {
+                    this.transcriptText = '';
+                    this.currentAiTranscript = '';
+                    this.currentUserTranscript = '';
+                    this.clearChat();
+                }
                 const sessionPayload: Record<string, unknown> = {
+                    // instructions NICHT setzen – wird vom Foundry Agent geladen.
+                    // Voice, VAD, Noise Suppression etc. sind Session-Properties und
+                    // müssen immer explizit konfiguriert werden (kommen NICHT vom Agent).
                     modalities: ['text', 'audio'],
                     voice: {
                         type: 'azure-standard',
                         name: 'de-DE-Florian:DragonHDLatestNeural',
+                        temperature: 0.8,
                     },
                     input_audio_format: 'pcm16',
                     output_audio_format: 'pcm16',
                     input_audio_sampling_rate: 24000,
                     turn_detection: {
                         type: 'azure_semantic_vad_multilingual',
-                        threshold: 0.5,
+                        threshold: 0.3,
                         prefix_padding_ms: 300,
-                        silence_duration_ms: 800, // Längere Pause für Diktat im Auto
+                        silence_duration_ms: 2000,
                         languages: ['de'],
-                        remove_filler_words: false, // Deaktiviert, da es perfektes Echo-Timing erfordert
-                        interrupt_response: true, // Wichtig für Barge-In
-                        auto_truncate: false,     // Manuelles, client-seitiges Abbruch-Handling ist robuster
+                        remove_filler_words: false,
+                        interrupt_response: true,
+                        auto_truncate: false,
                     },
                     input_audio_noise_reduction: {
                         type: 'azure_deep_noise_suppression',
@@ -335,8 +378,55 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     },
                 };
 
+                // session.update MUSS als allererste Nachricht kommen –
+                // der Server erwartet es als Session-Konfiguration.
                 this.sendJson({ type: 'session.update', session: sessionPayload });
-                this.log('session.update gesendet, starte Mikrofon...');
+                this.log('session.update gesendet');
+
+                // Bei Reconnect: bisherigen Gesprächsverlauf als Konversations-Items injizieren
+                // (NACH session.update – sonst "max_config_attempts_exceeded")
+                if (isReconnect && this.chatMessages.length > 0) {
+                    // System-Hinweis als erste Nachricht
+                    this.sendJson({
+                        type: 'conversation.item.create',
+                        item: {
+                            type: 'message',
+                            role: 'user',
+                            content: [{ type: 'input_text', text:
+                                '[SYSTEM-HINWEIS] Die Verbindung wurde kurz unterbrochen und automatisch wiederhergestellt. ' +
+                                'Das Gespräch wird nahtlos fortgesetzt. Begrüße den Benutzer NICHT erneut – ' +
+                                'sage stattdessen kurz, dass du wieder da bist und wo ihr stehengeblieben seid.'
+                            }]
+                        }
+                    });
+
+                    // Bisherige Chat-Nachrichten als Konversations-History einspielen
+                    for (const msg of this.chatMessages) {
+                        if (!msg.text.trim()) continue;
+                        if (msg.role === 'user') {
+                            this.sendJson({
+                                type: 'conversation.item.create',
+                                item: {
+                                    type: 'message',
+                                    role: 'user',
+                                    content: [{ type: 'input_text', text: msg.text }]
+                                }
+                            });
+                        } else {
+                            this.sendJson({
+                                type: 'conversation.item.create',
+                                item: {
+                                    type: 'message',
+                                    role: 'assistant',
+                                    content: [{ type: 'text', text: msg.text }]
+                                }
+                            });
+                        }
+                    }
+                    this.log(`Reconnect: ${this.chatMessages.length} Konversations-Items injiziert`);
+                }
+
+                this.log('Starte Mikrofon...');
 
                 void this.startMicrophone();
                 this.setState('listening');
@@ -358,11 +448,19 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 this.log(`WebSocket geschlossen: Code=${event.code} Reason="${event.reason || '(kein)'}"`);
                 const wasActive = this.controlState !== 'idle' && this.controlState !== 'error';
                 const reason = this.closeCodeToMessage(event.code, event.reason);
-                this.cleanup();
-                if (wasActive) {
+
+                // Reconnect bei unerwartetem Verbindungsabbruch (z.B. Azure 230s Timeout)
+                const isRecoverable = !this.intentionalClose && wasActive
+                    && event.code !== 1008  // Policy violation (Auth-Fehler)
+                    && this.reconnectAttempt < VoiceLiveControl.MAX_RECONNECT_ATTEMPTS;
+
+                this.cleanupConnection(); // WS + Audio aufräumen, Chat behalten
+
+                if (isRecoverable) {
+                    this.attemptReconnect();
+                } else if (wasActive && !this.intentionalClose) {
                     this.setState('error', reason);
-                } else {
-                    // Auch bei onerror-Pfad: Fehlermeldung setzen
+                } else if (!this.intentionalClose) {
                     this.setState('error', reason || 'WebSocket-Fehler – Endpoint oder Token prüfen');
                 }
             };
@@ -371,6 +469,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             this.log(`startSession Fehler: ${msg}`);
             this.setState('error', `Fehler: ${msg.slice(0, 80)}`);
         }
+    }
+
+    /** Wartet mit exponentiellem Backoff und startet dann eine neue Session. */
+    private attemptReconnect(): void {
+        this.reconnectAttempt++;
+        const delay = VoiceLiveControl.RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempt - 1);
+        this.setState('reconnecting');
+        this.log(`Reconnect ${this.reconnectAttempt}/${VoiceLiveControl.MAX_RECONNECT_ATTEMPTS} in ${delay}ms...`);
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.startSession(true);
+        }, delay);
     }
 
     private closeCodeToMessage(code: number, reason: string): string {
@@ -400,7 +510,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         this.log(`← ${msg.type}`);
         switch (msg.type) {
             case 'input_audio_buffer.speech_started': {
-                this.log("User unterbricht (Barge-In) - Starte manuellen Abbruch...");
+                const wasAiSpeaking = this.controlState === 'ai-speaking';
+                this.log(`User unterbricht (Barge-In) – wasAiSpeaking=${wasAiSpeaking}`);
 
                 // 1. Client-Audio SOFORT hart stoppen (wichtig für die UX im Auto!)
                 if (this.activeSources.length > 0) {
@@ -418,13 +529,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     this.nextPlayTime = this.audioContext.currentTime;
                 }
 
-                this.currentUserTranscript = '';
-                this.lastUserBubbleEl = null;
-                this.setState('user-speaking');
-
-                // 3. Den Server SICHER abbrechen
+                // 3. Den Server abbrechen – VOR setState, da controlState sich ändert!
                 if (this.ws?.readyState === WebSocket.OPEN &&
-                    this.controlState === 'ai-speaking' &&
+                    wasAiSpeaking &&
                     !this.isCancelling) {
 
                     this.isCancelling = true;
@@ -434,6 +541,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     // Fail-Safe: Wenn der Server nicht antwortet, geben wir den State nach 2s wieder frei
                     setTimeout(() => { this.isCancelling = false; }, 2000);
                 }
+
+                // 4. Erst NACH dem Cancel den State wechseln
+                this.currentUserTranscript = '';
+                this.lastUserBubbleEl = null;
+                this.setState('user-speaking');
                 break;
             }
             case 'input_audio_buffer.speech_stopped':
@@ -712,7 +824,21 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         const ts = new Date().toISOString().slice(11, 23);
         const entry = `[${ts}] ${msg}`;
         this.eventLogText += entry + '\n';
+        this.eventLogEntries.push(entry);
         console.log('[VoiceLive]', msg);
+
+        if (this.eventLogEl) {
+            const line = document.createElement('div');
+            line.className = 'ai-event-log-line';
+            if (msg.includes('FEHLER') || msg.includes('error') || msg.includes('Error')) {
+                line.classList.add('ai-event-log-error');
+            } else if (msg.includes('WARNUNG') || msg.includes('warning')) {
+                line.classList.add('ai-event-log-warn');
+            }
+            line.textContent = entry;
+            this.eventLogEl.appendChild(line);
+            this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -785,11 +911,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     }
 
     private stopSession(): void {
+        this.intentionalClose = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.reconnectAttempt = 0;
         this.cleanup();
         this.setState('idle');
     }
 
-    private cleanup(): void {
+    /** Räumt nur WS + Audio auf, behält Chat/Transkript für Reconnect. */
+    private cleanupConnection(): void {
         if (this.animationFrameId !== null) {
             cancelAnimationFrame(this.animationFrameId);
             this.animationFrameId = null;
@@ -815,9 +948,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         }
         if (this.orbEl) this.orbEl.style.transform = '';
         this.vuBars.forEach(b => { b.style.height = '3px'; });
-
         this.activeSources.forEach(s => { try { s.stop(); } catch { /* */ } });
         this.activeSources = [];
+    }
+
+    private cleanup(): void {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.cleanupConnection();
     }
 
     public getOutputs(): IOutputs {
