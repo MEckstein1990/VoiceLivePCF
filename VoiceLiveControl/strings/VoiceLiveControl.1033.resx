@@ -47,53 +47,40 @@
   <data name="VoiceLiveChat_Desc" xml:space="preserve">
     <value>Echtzeit-Sprach-Dialog mit KI-Assistent via Azure Voice Live API</value>
   </data>
-  <!-- AuthMode -->
-  <data name="AuthMode_Display" xml:space="preserve">
-    <value>Authentifizierung</value>
+  <!-- AgentId -->
+  <data name="AgentId_Display" xml:space="preserve">
+    <value>Agent ID</value>
   </data>
-  <data name="AuthMode_Desc" xml:space="preserve">
-    <value>Authentifizierungsmethode. APIKey = Direkter API-Schluessel (Dev/Test). OAuthToken = Token von Custom Connector oder Flow (Produktion).</value>
+  <data name="AgentId_Desc" xml:space="preserve">
+    <value>ID des Foundry-Agenten.</value>
   </data>
-  <data name="AuthMode_APIKey_Display" xml:space="preserve">
-    <value>API Key</value>
+  <!-- AgentProjectName -->
+  <data name="AgentProjectName_Display" xml:space="preserve">
+    <value>Agent Projektname</value>
   </data>
-  <data name="AuthMode_OAuthToken_Display" xml:space="preserve">
-    <value>OAuth Token</value>
+  <data name="AgentProjectName_Desc" xml:space="preserve">
+    <value>Name des Agent-Projekts im Foundry-Backend.</value>
   </data>
-  <!-- APIKey -->
-  <data name="VLC_APIKey_Display" xml:space="preserve">
-    <value>API Key</value>
+  <!-- AgentEndpoint -->
+  <data name="AgentEndpoint_Display" xml:space="preserve">
+    <value>Agent Endpoint</value>
   </data>
-  <data name="VLC_APIKey_Desc" xml:space="preserve">
-    <value>Azure AI Services API-Schluessel. Nur bei AuthMode APIKey erforderlich. Fuer Produktion wird OAuthToken empfohlen, da kein Secret im Client liegt.</value>
+  <data name="AgentEndpoint_Desc" xml:space="preserve">
+    <value>Foundry Endpoint-URL für den Agenten.</value>
   </data>
-  <!-- Token -->
-  <data name="Token_Display" xml:space="preserve">
-    <value>OAuth Token</value>
+  <!-- TokenEndpoint -->
+  <data name="TokenEndpoint_Display" xml:space="preserve">
+    <value>Token Endpoint</value>
   </data>
-  <data name="Token_Desc" xml:space="preserve">
-    <value>Kurzlebiger Bearer-Token (JWT) fuer die WebSocket-Authentifizierung. Nur bei AuthMode OAuthToken erforderlich. Wird per Custom Connector und Flow oder Azure Function bereitgestellt. Gueltigkeit ca. 1h, danach per Power Fx erneuern.</value>
+  <data name="TokenEndpoint_Desc" xml:space="preserve">
+    <value>Endpoint zum Abruf des Agent Access Tokens.</value>
   </data>
-  <!-- Endpoint -->
-  <data name="VLC_Endpoint_Display" xml:space="preserve">
-    <value>Endpoint URL</value>
+  <!-- ProxyKey -->
+  <data name="ProxyKey_Display" xml:space="preserve">
+    <value>Proxy Key</value>
   </data>
-  <data name="VLC_Endpoint_Desc" xml:space="preserve">
-    <value>Azure AI Services Endpoint-URL (z.B. https://myresource.cognitiveservices.azure.com). Bei allen AuthModes erforderlich.</value>
-  </data>
-  <!-- ModelName -->
-  <data name="ModelName_Display" xml:space="preserve">
-    <value>Modellname</value>
-  </data>
-  <data name="ModelName_Desc" xml:space="preserve">
-    <value>Name des AI-Modells (z.B. gpt-4.1)</value>
-  </data>
-  <!-- SystemPrompt -->
-  <data name="VLC_SystemPrompt_Display" xml:space="preserve">
-    <value>System Prompt</value>
-  </data>
-  <data name="VLC_SystemPrompt_Desc" xml:space="preserve">
-    <value>Optionaler System-Prompt fuer den KI-Assistenten. Wenn leer, wird ein Standard-Prompt verwendet.</value>
+  <data name="ProxyKey_Desc" xml:space="preserve">
+    <value>Key für den WebSocket-Proxy zur Authentifizierung.</value>
   </data>
   <!-- Connected -->
   <data name="Connected_Display" xml:space="preserve">
@@ -115,5 +102,12 @@
   </data>
   <data name="VLC_Transcript_Desc" xml:space="preserve">
     <value>Vollstaendiges Gespraechstranskript im Format [User]: ... / [KI]: ... - aktualisiert sich laufend waehrend des Gesprächs.</value>
+  </data>
+  <!-- EventLog -->
+  <data name="EventLog_Display" xml:space="preserve">
+    <value>Event Log</value>
+  </data>
+  <data name="EventLog_Desc" xml:space="preserve">
+    <value>Debug-Log mit Verbindungs- und Session-Events.</value>
   </data>
 </root>
