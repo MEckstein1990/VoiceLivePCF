@@ -89,6 +89,34 @@
   <data name="Connected_Desc" xml:space="preserve">
     <value>Steuert den Session-Start (true) und -Stop (false). Kann per Power Fx Toggle oder Button gesetzt werden.</value>
   </data>
+    <!-- AgentVoice -->
+  <data name="AgentVoice_Display" xml:space="preserve">
+    <value>KI Stimme</value>
+  </data>
+  <data name="AgentVoice_Desc" xml:space="preserve">
+    <value>Waehle die neuronale Stimme des Agenten aus.</value>
+  </data>
+    <!-- SilenceDurationMs -->
+  <data name="SilenceDurationMs_Display" xml:space="preserve">
+    <value>Denkpause (ms)</value>
+  </data>
+  <data name="SilenceDurationMs_Desc" xml:space="preserve">
+    <value>Wie lange wartet die KI bei Stille, bis sie antwortet? (Z.B. 1500 für Diktat)</value>
+  </data>
+    <!-- VadThreshold -->
+  <data name="VadThreshold_Display" xml:space="preserve">
+    <value>Laerm-Schwelle</value>
+  </data>
+  <data name="VadThreshold_Desc" xml:space="preserve">
+    <value>Wert zwischen 0.1 und 1.0. Hoeherer Wert macht die Erkennung unempfindlicher gegen Nebengeraeusche.</value>
+  </data>
+    <!-- AgentLanguage -->
+  <data name="AgentLanguage_Display" xml:space="preserve">
+    <value>Sprache</value>
+  </data>
+  <data name="AgentLanguage_Desc" xml:space="preserve">
+    <value>Die primaere Sprache fuer die Spracherkennung und Transkription (z.B. de, en, fr).</value>
+  </data>
   <!-- ConnectionStatus -->
   <data name="VLC_ConnectionStatus_Display" xml:space="preserve">
     <value>Verbindungsstatus</value>
@@ -109,5 +137,28 @@
   </data>
   <data name="EventLog_Desc" xml:space="preserve">
     <value>Debug-Log mit Verbindungs- und Session-Events.</value>
+  </data>
+  <!-- AgentVoice Values -->
+  <data name="AgentVoice_Florian" xml:space="preserve">
+    <value>Florian (Männlich) - Standard</value>
+  </data>
+  <data name="AgentVoice_Katja" xml:space="preserve">
+    <value>Katja (Weiblich)</value>
+  </data>
+  <data name="AgentVoice_Seraphina" xml:space="preserve">
+    <value>Seraphina (Weiblich)</value>
+  </data>
+  <data name="AgentVoice_Conrad" xml:space="preserve">
+    <value>Conrad (Männlich)</value>
+  </data>
+  <!-- AgentLanguage Values -->
+  <data name="Lang_DE" xml:space="preserve">
+    <value>Deutsch</value>
+  </data>
+  <data name="Lang_EN" xml:space="preserve">
+    <value>Englisch</value>
+  </data>
+  <data name="Lang_FR" xml:space="preserve">
+    <value>Französisch</value>
   </data>
 </root>

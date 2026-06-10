@@ -10,8 +10,24 @@
     <property name="AgentProjectName" display-name-key="AgentProjectName_Display" description-key="AgentProjectName_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="AgentEndpoint" display-name-key="AgentEndpoint_Display" description-key="AgentEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="TokenEndpoint" display-name-key="TokenEndpoint_Display" description-key="TokenEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
+    
     <property name="ProxyKey" display-name-key="ProxyKey_Display" description-key="ProxyKey_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="Connected" display-name-key="Connected_Display" description-key="Connected_Desc" of-type="TwoOptions" usage="bound" required="false" />
+    
+    <property name="AgentVoice" display-name-key="AgentVoice_Display" description-key="AgentVoice_Desc" of-type="Enum" usage="input" required="true">
+      <value name="de-DE-Florian:DragonHDLatestNeural" display-name-key="AgentVoice_Florian">de-DE-Florian:DragonHDLatestNeural</value>
+      <value name="de-DE-KatjaNeural" display-name-key="AgentVoice_Katja">de-DE-KatjaNeural</value>
+      <value name="de-DE-Seraphina:DragonHDLatestNeural" display-name-key="AgentVoice_Seraphina">de-DE-Seraphina:DragonHDLatestNeural</value>
+      <value name="de-DE-ConradNeural" display-name-key="AgentVoice_Conrad">de-DE-ConradNeural</value>
+    </property>
+    <property name="AgentLanguage" display-name-key="AgentLanguage_Display" description-key="AgentLanguage_Desc" of-type="Enum" usage="input" required="true">
+      <value name="de" display-name-key="Lang_DE">de</value>
+      <value name="en" display-name-key="Lang_EN">en</value>
+      <value name="fr" display-name-key="Lang_FR">fr</value>
+    </property>
+    <property name="SilenceDurationMs" display-name-key="SilenceDurationMs_Display" description-key="SilenceDurationMs_Desc" of-type="Whole.None" usage="input" required="true" default-value="1500" />
+    <property name="VadThreshold" display-name-key="VadThreshold_Display" description-key="VadThreshold_Desc" of-type="FP" usage="input" required="true" default-value="0.5" />
+
     <property name="ConnectionStatus" display-name-key="VLC_ConnectionStatus_Display" description-key="VLC_ConnectionStatus_Desc" of-type="SingleLine.Text" usage="output" />
     <property name="Transcript" display-name-key="VLC_Transcript_Display" description-key="VLC_Transcript_Desc" of-type="Multiple" usage="output" />
     <property name="EventLog" display-name-key="EventLog_Display" description-key="EventLog_Desc" of-type="Multiple" usage="output" />

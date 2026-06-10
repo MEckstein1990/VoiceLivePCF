@@ -1,35 +1,38 @@
 /**
  * Voice Live API – Real-time Voice Chat – PCF Control
  *
- * Dieses Control ermöglicht einen bidirektionalen Echtzeit-Sprach-Dialog
- * über die Azure Voice Live API direkt aus einer Power Apps / Dynamics 365 Oberfläche.
+ * Dieses Power Apps Component Framework (PCF) Control implementiert einen
+ * bidirektionalen Echtzeit-Sprachdialog mit einem KI-Assistenten. Es nutzt
+ * die Azure KI Foundry (Project AI) für das Agenten-Backend und die
+ * Azure Voice Live API für die Sprachverarbeitung.
  *
- * Unterschiede zur Azure OpenAI Realtime API (HelloWorldControl):
- *   - WSS-Endpoint: /voice-live/realtime statt /openai/realtime
- *   - Modell statt Deployment (model= statt deployment=)
- *   - Azure Semantic VAD (multilingual) statt Server VAD
- *   - Built-in Noise Suppression (azure_deep_noise_suppression)
- *   - Built-in Echo Cancellation (server_echo_cancellation)
- *   - Azure Speech STT statt Whisper-1
- *   - Voice-Objekt-Struktur: {type: "openai", name: "alloy"} statt String
- *   - Kein manueller Noise Gate nötig (Server macht das)
- *
- * Konfiguration erfolgt über Power Apps Properties:
- *   - APIKey:    Azure Foundry API-Schlüssel
- *   - Endpoint:  Foundry Endpoint-URL (z. B. https://myresource.cognitiveservices.azure.com)
- *   - ModelName: Name des Modells (z. B. gpt-4.1)
- *   - IsActive:  Boolean (bound) – steuert Session-Start/-Stop von Power Apps aus
+ * Hauptmerkmale:
+ * - **Echtzeit-Kommunikation:** Streaming von Audio zum Server und Empfang von
+ *   Audio-Antworten in Echtzeit über WebSockets.
+ * - **Foundry Agent Integration:** Verbindet sich mit einem vordefinierten
+ *   Foundry-Agenten, der die Dialoglogik und Tool-Nutzung steuert.
+ * - **WebSocket-Proxy:** Nutzt eine Azure Function als sicheren Proxy, um
+ *   API-Keys und Endpunkte zu verwalten, anstatt sie im Client preiszugeben.
+ * - **Dynamische UI:** Eine animierte Orb-Visualisierung zeigt den aktuellen
+ *   Status (zuhören, sprechen, KI-Antwort) an.
+ * - **Barge-In:** Benutzer können die KI-Antwort jederzeit unterbrechen, indem
+ *   sie einfach zu sprechen beginnen.
+ * - **Konfigurierbarkeit:** Wichtige Parameter wie KI-Stimme, Sprache,
+ *   Sprechpausen (VAD) und mehr können direkt in Power Apps konfiguriert werden.
+ * - **Transkript-Anzeige:** Ein optionales Chat-Panel zeigt das Gesprächs-
+ *   transkript im WhatsApp-Stil an.
  */
+
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 
 /**
  * Zustandsmodell des Controls – steuert UI-Darstellung und erlaubte Aktionen.
  *
  *   idle ──▶ connecting ──▶ listening ◀──▶ user-speaking
- *                                ▲               │
- *                                └── ai-speaking ─┘
- *                                        │
- *                                      error
+ *                         ▲      ▲                 │
+ *                         │      └── ai-speaking◀─┘
+ *                         │               │
+ *                    Reconnecting◀───── error
  */
 type ControlState = 'idle' | 'connecting' | 'reconnecting' | 'listening' | 'user-speaking' | 'ai-speaking' | 'error';
 
@@ -67,6 +70,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private activeSources: AudioBufferSourceNode[] = [];
     private isCancelling = false;
 
+    private isMuted = false;
     // ── Reconnect ────────────────────────────────────────────────────────
     private intentionalClose = false;
     private reconnectAttempt = 0;
@@ -86,9 +90,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
 
     // ── Event-Log (Debug) ────────────────────────────────────────────────
     private eventLogEntries: string[] = [];
-    private eventLogOpen = true;
+    // private eventLogOpen = true;
     private eventLogEl!: HTMLDivElement;
-    private eventLogToggleBtn!: HTMLButtonElement;
+    // private eventLogToggleBtn!: HTMLButtonElement;
     private loggedInit = false;
 
     // ── Konfiguration (aus Power Apps Properties) ────────────────────────
@@ -97,26 +101,35 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private agentendpoint = '';
     private tokenEndpoint = '';
     private proxyKey = '';
+    private agentVoice = 'de-DE-Florian:DragonHDLatestNeural';
+    private silenceDurationMs = 2000;
+    private vadThreshold = 0.5;
+    private agentLanguage = 'de';
     /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
-    private fetchedToken = '';
+    // private fetchedToken = '';
 
     // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
-    private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://test-speechlive-mcp.services.ai.azure.com'; //'https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com';
-    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-playground-agent-v3';// 'dataverse-proxy-agent';
+    private static readonly DEFAULT_AGENT_ENDPOINT    = 'https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com'; //'https://test-speechlive-mcp.services.ai.azure.com';
+    private static readonly DEFAULT_AGENT_ID          = 'dataverse-proxy-agent';// 'dataverse-proxy-agent-v3';
     private static readonly DEFAULT_AGENT_PROJECT     = 'proj-default';
-    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';//'https://func-voicelive-kora.azurewebsites.net';
+    private static readonly DEFAULT_TOKEN_ENDPOINT    = 'https://func-voicelive-kora.azurewebsites.net'; //'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
     private static readonly DEFAULT_PROXY_KEY         = 'qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057';
+    private static readonly DEFAULT_AGENT_VOICE       = 'de-DE-Florian:DragonHDLatestNeural';
+    private static readonly DEFAULT_AGENT_LANGUAGE    = 'de';
+    private static readonly DEFAULT_SILENCE_DURATION  = 2000;
+    private static readonly DEFAULT_VAD_THRESHOLD     = 0.5;
     
 
     // ── DOM-Referenzen ───────────────────────────────────────────────────
     private orbEl!: HTMLDivElement;
     private statusTextEl!: HTMLParagraphElement;
     private statusHeaderEl!: HTMLSpanElement;
-    private vuBars!: HTMLDivElement[];
-    private configWarningEl!: HTMLDivElement;
+    private vuBars!: HTMLDivElement[];    
     private chatToggleBtn!: HTMLButtonElement;
     private chatPanel!: HTMLDivElement;
     private chatMessagesEl!: HTMLDivElement;
+    private muteBtn!: HTMLButtonElement;
+    private connectBtn!: HTMLButtonElement;
     private lastAiBubbleEl: HTMLDivElement | null = null;
     private lastUserBubbleEl: HTMLDivElement | null = null;
 
@@ -176,9 +189,38 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 </div>
             </div>
             <div class="ai-voice-footer">
+                <button class="ai-voice-action-btn ai-voice-mute-btn" title="Mikrofon stummschalten">
+                    <svg class="icon-mic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                        <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+                        <line x1="12" x2="12" y1="19" y2="22"/>
+                    </svg>
+                    <svg class="icon-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="2" x2="22" y1="2" y2="22"/>
+                        <path d="M18.89 13.23A7.12 7.12 0 0 0 19 11v-1"/>
+                        <path d="M5 10v1a6.93 6.93 0 0 0 1.39 4.19"/>
+                        <path d="M9 10.5V5a3 3 0 0 1 5.14-2.12"/>
+                        <path d="M12 18.5a6.95 6.95 0 0 1-3.6-1.02"/>
+                        <line x1="12" x2="12" y1="19" y2="22"/>
+                    </svg>
+                </button>
+
                 <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-config-warning"></div>
+
+                <button class="ai-voice-action-btn ai-voice-connect-btn" title="Verbindung herstellen">
+                    <svg class="icon-waves" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="4" x2="12" y2="20"></line>
+                        <line x1="6" y1="10" x2="6" y2="14"></line>
+                        <line x1="18" y1="10" x2="18" y2="14"></line>
+                    </svg>
+                    <svg class="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
             </div>
+            <!--
             <div class="ai-event-log">
                 <div class="ai-event-log-header">
                     <span>Event Log</span>
@@ -189,31 +231,37 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 </div>
                 <div class="ai-event-log-body"></div>
             </div>
+            -->
         `;
 
         this.orbEl = this.container.querySelector('.ai-voice-orb') as HTMLDivElement;
         this.statusTextEl = this.container.querySelector('.ai-voice-status-text') as HTMLParagraphElement;
         this.statusHeaderEl = this.container.querySelector('.ai-voice-status-header') as HTMLSpanElement;
-        this.configWarningEl = this.container.querySelector('.ai-voice-config-warning') as HTMLDivElement;
         this.vuBars = Array.from(this.container.querySelectorAll('.ai-voice-bar')) as HTMLDivElement[];
         this.chatToggleBtn = this.container.querySelector('.ai-chat-toggle') as HTMLButtonElement;
         this.chatPanel = this.container.querySelector('.ai-chat-panel') as HTMLDivElement;
         this.chatMessagesEl = this.container.querySelector('.ai-chat-messages') as HTMLDivElement;
+        this.muteBtn = this.container.querySelector('.ai-voice-mute-btn') as HTMLButtonElement;
+        this.connectBtn = this.container.querySelector('.ai-voice-connect-btn') as HTMLButtonElement;
 
-        this.eventLogEl = this.container.querySelector('.ai-event-log-body') as HTMLDivElement;
-        this.eventLogToggleBtn = this.container.querySelector('.ai-event-log-toggle') as HTMLButtonElement;
-        const eventLogClearBtn = this.container.querySelector('.ai-event-log-clear') as HTMLButtonElement;
+        // this.eventLogEl = this.container.querySelector('.ai-event-log-body') as HTMLDivElement;
+        // this.eventLogToggleBtn = this.container.querySelector('.ai-event-log-toggle') as HTMLButtonElement;
+        // const eventLogClearBtn = this.container.querySelector('.ai-event-log-clear') as HTMLButtonElement;
+
 
         this.chatToggleBtn.addEventListener('click', () => this.toggleChat());
-        this.eventLogToggleBtn.addEventListener('click', () => {
-            this.eventLogOpen = !this.eventLogOpen;
-            this.eventLogEl.style.display = this.eventLogOpen ? 'block' : 'none';
-            this.eventLogToggleBtn.textContent = this.eventLogOpen ? '\u25BC' : '\u25B6';
-        });
-        eventLogClearBtn.addEventListener('click', () => {
-            this.eventLogEntries = [];
-            this.eventLogEl.innerHTML = '';
-        });
+        // this.eventLogToggleBtn.addEventListener('click', () => {
+        //     this.eventLogOpen = !this.eventLogOpen;
+        //     this.eventLogEl.style.display = this.eventLogOpen ? 'block' : 'none';
+        //     this.eventLogToggleBtn.textContent = this.eventLogOpen ? '\u25BC' : '\u25B6';
+        // });
+        // eventLogClearBtn.addEventListener('click', () => {
+        //     this.eventLogEntries = [];
+        //     this.eventLogEl.innerHTML = '';
+        // });
+        this.muteBtn.addEventListener('click', () => this.toggleMute());
+        this.connectBtn.addEventListener('click', () => this.toggleConnection());
+
         this.container.className = 'ai-voice-container state-idle';
     }
 
@@ -222,14 +270,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         // in diesem Fall greifen die eingebauten Defaults.
         const prop = (raw: string | null | undefined, def: string): string =>
             (raw && raw !== 'val' && raw !== 'undefined') ? raw : def;
-        const propRaw = (raw: string | null | undefined): string =>
-            (raw && raw !== 'val' && raw !== 'undefined') ? raw : '';
 
-        this.agentId          = prop(context.parameters.AgentId.raw,          VoiceLiveControl.DEFAULT_AGENT_ID);
-        this.agentProjectName = prop(context.parameters.AgentProjectName.raw, VoiceLiveControl.DEFAULT_AGENT_PROJECT);
-        this.tokenEndpoint    = prop(context.parameters.TokenEndpoint.raw,    VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT);
-        this.proxyKey         = prop(context.parameters.ProxyKey.raw,         VoiceLiveControl.DEFAULT_PROXY_KEY);
-        this.agentendpoint    = prop(context.parameters.AgentEndpoint.raw,    VoiceLiveControl.DEFAULT_AGENT_ENDPOINT);
+        this.agentId           = prop(context.parameters.AgentId.raw,           VoiceLiveControl.DEFAULT_AGENT_ID);
+        this.agentProjectName  = prop(context.parameters.AgentProjectName.raw,  VoiceLiveControl.DEFAULT_AGENT_PROJECT);
+        this.tokenEndpoint     = prop(context.parameters.TokenEndpoint.raw,     VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT);
+        this.proxyKey          = prop(context.parameters.ProxyKey.raw,          VoiceLiveControl.DEFAULT_PROXY_KEY);
+        this.agentendpoint     = prop(context.parameters.AgentEndpoint.raw,     VoiceLiveControl.DEFAULT_AGENT_ENDPOINT);
+        this.agentVoice        = prop(context.parameters.AgentVoice.raw,        VoiceLiveControl.DEFAULT_AGENT_VOICE);
+        this.agentLanguage     = prop(context.parameters.AgentLanguage.raw,     VoiceLiveControl.DEFAULT_AGENT_LANGUAGE);
+        this.silenceDurationMs = (typeof context.parameters.SilenceDurationMs.raw === 'number') 
+                                    ? context.parameters.SilenceDurationMs.raw 
+                                    : VoiceLiveControl.DEFAULT_SILENCE_DURATION;
+        this.vadThreshold      = (typeof context.parameters.VadThreshold.raw === 'number') 
+                                    ? context.parameters.VadThreshold.raw 
+                                    : VoiceLiveControl.DEFAULT_VAD_THRESHOLD;
 
         if (!this.loggedInit) {
             this.loggedInit = true;
@@ -237,11 +291,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         }
 
         const configured = !!(this.agentId && this.agentProjectName && this.tokenEndpoint && this.proxyKey && this.agentendpoint);
-        const warning = '\u26A0 Agent-Konfiguration (ID, Projekt, Endpoint, Token-Endpoint, Proxy-Key) ist unvollst\u00e4ndig.';
-
-        if (this.configWarningEl) {
-            this.configWarningEl.textContent = warning;
-            this.configWarningEl.classList.toggle('visible', !configured);
+        if (this.connectBtn) {
+            this.connectBtn.disabled = !configured;
+            if (!configured) this.connectBtn.title = 'Konfiguration unvollständig';
         }
 
         const isActive = context.parameters.Connected.raw === true;
@@ -287,6 +339,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         const info = labels[newState];
         if (this.statusTextEl) this.statusTextEl.textContent = info.text;
         if (this.statusHeaderEl) this.statusHeaderEl.textContent = info.header;
+
+        const isActive = ['connecting', 'reconnecting', 'listening', 'user-speaking', 'ai-speaking'].includes(newState);
+        if (this.connectBtn) {
+            this.connectBtn.title = isActive ? 'Verbindung trennen' : 'Verbindung herstellen';
+        }
+
         if (this.orbEl) this.orbEl.style.transform = '';
         this.notifyOutputChanged();
     }
@@ -350,7 +408,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     modalities: ['text', 'audio'],
                     voice: {
                         type: 'azure-standard',
-                        name: 'de-DE-Florian:DragonHDLatestNeural',
+                        name: this.agentVoice,
                         temperature: 0.8,
                     },
                     input_audio_format: 'pcm16',
@@ -358,10 +416,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     input_audio_sampling_rate: 24000,
                     turn_detection: {
                         type: 'azure_semantic_vad_multilingual',
-                        threshold: 0.3,
+                        threshold: this.vadThreshold,
                         prefix_padding_ms: 300,
-                        silence_duration_ms: 2000,
-                        languages: ['de'],
+                        silence_duration_ms: this.silenceDurationMs,
+                        languages: [this.agentLanguage],
                         remove_filler_words: false,
                         interrupt_response: true,
                         auto_truncate: false,
@@ -374,7 +432,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                     },
                     input_audio_transcription: {
                         model: 'azure-speech',
-                        language: 'de',
+                        language: this.agentLanguage,
                     },
                 };
 
@@ -452,6 +510,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 // Reconnect bei unerwartetem Verbindungsabbruch (z.B. Azure 230s Timeout)
                 const isRecoverable = !this.intentionalClose && wasActive
                     && event.code !== 1008  // Policy violation (Auth-Fehler)
+                && event.code !== 1007  // Invalid payload / Agent not found
                     && this.reconnectAttempt < VoiceLiveControl.MAX_RECONNECT_ATTEMPTS;
 
                 this.cleanupConnection(); // WS + Audio aufräumen, Chat behalten
@@ -486,6 +545,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private closeCodeToMessage(code: number, reason: string): string {
         const map: Record<number, string> = {
             1006: 'Keine Verbindung \u2013 Endpoint-URL pr\u00fcfen',
+            1007: 'Agent nicht gefunden oder fehlerhafte Anfrage',
             1008: 'Richtlinienversto\u00df \u2013 API-Key oder Berechtigungen pr\u00fcfen',
             1011: 'Interner Serverfehler',
         };
@@ -685,7 +745,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
     private async startMicrophone(): Promise<void> {
         try {
             if (!navigator.mediaDevices?.getUserMedia) {
-                this.setState('error', 'getUserMedia nicht verf\u00fcgbar \u2013 HTTPS oder Browser-Support pr\u00fcfen');
+                const errMsg = 'getUserMedia nicht verf\u00fcgbar \u2013 HTTPS oder Browser-Support pr\u00fcfen';
+                this.log(`FEHLER (Mikrofon): ${errMsg}`);
+                this.setState('error', errMsg);
                 return;
             }
             this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -710,11 +772,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             this.scriptProcessor.connect(this.audioContext.destination);
 
             this.scriptProcessor.onaudioprocess = (e: AudioProcessingEvent) => {
-                if (this.ws?.readyState !== WebSocket.OPEN) return;
+                if (this.ws?.readyState !== WebSocket.OPEN || this.isMuted) return;
 
                 const raw = e.inputBuffer.getChannelData(0);
 
-                // Kein Noise Gate – Voice Live hat azure_deep_noise_suppression
                 const input = this.resample(raw, nativeRate);
                 const pcm16 = this.float32ToPcm16(input);
                 const base64 = this.bufferToBase64(pcm16.buffer as ArrayBuffer);
@@ -732,7 +793,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
                 NotSupportedError:'Mikrofon-API nicht unterst\u00fctzt (HTTPS erforderlich)',
                 SecurityError:    'Sicherheitseinschr\u00e4nkung \u2013 Seite muss \u00fcber HTTPS geladen sein',
             };
-            this.setState('error', messages[name] ?? `Mikrofonfehler: ${name || 'Unbekannt'}`);
+            const finalMsg = messages[name] ?? `Mikrofonfehler: ${name || String(err)}`;
+            this.log(`FEHLER (Mikrofon): ${finalMsg}`);
+            this.setState('error', finalMsg);
         }
     }
 
@@ -746,7 +809,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
             this.analyser!.getByteFrequencyData(dataArray);
 
             let sum = 0;
-            for (const v of dataArray) sum += v ** 2;
+            // Nur tatsächliche Lautstärke berechnen, wenn nicht gemuted
+            if (!this.isMuted) {
+                for (const v of dataArray) sum += v ** 2;
+            }
             const rms = Math.sqrt(sum / dataArray.length) / 255;
             const level = Math.min(rms * 3.5, 1);
 
@@ -756,7 +822,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
 
             for (let i = 0; i < barCount; i++) {
                 const idx = Math.floor((i / barCount) * dataArray.length * 0.45);
-                const h = Math.max(3, (dataArray[idx] / 255) * 26);
+                // VU-Bars bei Mute fest auf 3px (Minimalhöhe) zwingen
+                const h = Math.max(3, this.isMuted ? 3 : (dataArray[idx] / 255) * 26);
                 this.vuBars[i].style.height = `${h}px`;
             }
         };
@@ -910,6 +977,36 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<IInp
         }
     }
 
+    private toggleConnection(): void {
+        const isConfigured = !!(this.agentId && this.agentProjectName && this.tokenEndpoint && this.proxyKey && this.agentendpoint);
+        if (!isConfigured) {
+            this.log('FEHLER: Kann nicht verbinden, Konfiguration unvollständig.');
+            return;
+        }
+
+        const currentlyActive = this.controlState !== 'idle' && this.controlState !== 'error' && this.controlState !== 'reconnecting';
+
+        if (currentlyActive) {
+            this.log('Connect-Button: Trenne Verbindung...');
+            this.stopSession();
+        } else {
+            this.log('Connect-Button: Starte Verbindung...');
+            void this.startSession();
+        }
+    }
+
+    private toggleMute(): void {
+        this.isMuted = !this.isMuted;
+        this.muteBtn.classList.toggle('muted', this.isMuted);
+        this.muteBtn.title = this.isMuted ? 'Stummschaltung aufheben' : 'Mikrofon stummschalten';
+        this.log(`Mikrofon ${this.isMuted ? 'stummgeschaltet' : 'aktiviert'}`);
+
+        if (this.isMuted && this.controlState === 'user-speaking') {
+            this.log('Erzwinge Commit des Audio-Puffers (Mute während des Sprechens)');
+            this.sendJson({ type: 'input_audio_buffer.commit' });
+        }
+    }
+    
     private stopSession(): void {
         this.intentionalClose = true;
         if (this.reconnectTimer) {

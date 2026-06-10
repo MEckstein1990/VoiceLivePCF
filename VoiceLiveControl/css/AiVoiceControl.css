@@ -368,73 +368,98 @@
 .state-error .ai-voice-status-text         { color: #ff6b6b; }  /* Rot */
 
 /* ══════════════════════════════════════════════════════════════════════════
-   FOOTER – Start-Button, Konfigurationswarnung
+   FOOTER – Fixiertes Layout & Button-Zustände
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* Footer-Container: vertikal gestapelt, zentriert */
 .ai-voice-footer {
     width: 100%;
     display: flex;
-    flex-direction: column;
+    justify-content: space-between;
     align-items: center;
-    gap: 10px;                                    /* 10px Abstand zwischen Elementen */
-    flex-shrink: 0;                               /* Footer behält immer seine Größe */
-    padding-bottom: 4px;
+    flex-shrink: 0;
+    margin-top: auto; /* Hält den Footer immer unten verankert */
+    padding: 8px 4px 0 4px;
+    min-height: 52px;
+    position: relative;
+    z-index: 10;
 }
 
-/* „Gespräch starten"-Button mit blau-lila Farbverlauf */
-.ai-voice-start-btn {
-    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
-        /* Farbverlauf von Blau (oben-links) nach Violett (unten-rechts) */
-    color: white;
-    border: none;                                 /* kein Standard-Rahmen */
-    padding: 13px 36px;                           /* großzügiger Innenabstand */
-    border-radius: 50px;                          /* "Pill"-Form: extrem abgerundete Ecken */
-    font-size: 15px;
-    font-weight: 500;                             /* medium-fett */
-    cursor: pointer;
+.ai-voice-action-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #a0a0b0;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
     display: flex;
     align-items: center;
-    gap: 9px;                                     /* Abstand zwischen Icon und Text */
-    transition: all 0.2s;
-    box-shadow: 0 4px 22px rgba(37, 99, 235, 0.38); /* blauer Schlagschatten unter dem Button */
-    letter-spacing: 0.3px;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
 }
 
-/* Hover: Button schwebt 2px nach oben + stärkerer Schatten */
-.ai-voice-start-btn:hover:not(:disabled) {
-    transform: translateY(-2px);                  /* 2px nach oben verschieben */
-    box-shadow: 0 7px 28px rgba(37, 99, 235, 0.5); /* tieferer, stärkerer Schatten */
+.ai-voice-action-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #ffffff;
 }
 
-/* Active (Klick): Button springt zurück auf Ausgangsposition */
-.ai-voice-start-btn:active:not(:disabled) {
-    transform: translateY(0);
+.ai-voice-action-btn svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
 }
 
-/* Deaktivierter Button: halbtransparent und nicht klickbar */
-.ai-voice-start-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;                          /* "Verboten"-Cursor */
+/* ── MUTE BUTTON LOGIK (Fix gegen Doppel-Mikrofon) ───────────────────── */
+.ai-voice-mute-btn {
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.8);
+    transition: opacity 0.3s, transform 0.3s;
 }
 
-/* Konfigurationswarnung – gelbe Box, standardmäßig versteckt.
-   Wird sichtbar wenn APIKey/Endpoint/DeploymentName fehlen
-   (JavaScript setzt die Klasse "visible"). */
-.ai-voice-config-warning {
-    font-size: 11px;
-    color: #f59e0b;                               /* Warngelb */
-    text-align: center;
-    padding: 5px 10px;
-    background: rgba(245, 158, 11, 0.1);          /* sehr dezenter gelber Hintergrund */
-    border-radius: 6px;
-    border: 1px solid rgba(245, 158, 11, 0.2);   /* leichter gelber Rand */
-    display: none;                                /* standardmäßig versteckt */
+.state-active .ai-voice-mute-btn {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1);
 }
 
-/* Wird per JavaScript eingeblendet wenn Konfiguration fehlt */
-.ai-voice-config-warning.visible {
-    display: block;
+/* Sichtbarkeits-Wechsel der Icons */
+.ai-voice-mute-btn .icon-mic-on { display: block; }
+.ai-voice-mute-btn .icon-mic-off { display: none; }
+
+.ai-voice-mute-btn.muted .icon-mic-on { display: none; }
+.ai-voice-mute-btn.muted .icon-mic-off { display: block; }
+
+.ai-voice-mute-btn.muted {
+    color: #ff4444;
+    background: rgba(255, 68, 68, 0.12);
+    border-color: rgba(255, 68, 68, 0.3);
+}
+
+/* ── CONNECT BUTTON LOGIK (2 Zustände: Wellen oder X) ───────────────── */
+
+/* Zustand 1: AUS / Nicht verbunden (Standard) */
+.ai-voice-connect-btn .icon-waves { display: block; }
+.ai-voice-connect-btn .icon-x { display: none; }
+
+/* Zustand 2: AN / Verbunden (.state-active ist auf dem Hauptcontainer) */
+.state-active .ai-voice-connect-btn {
+    color: #ffffff; /* Weißes X */
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.08);
+}
+.state-active .ai-voice-connect-btn .icon-waves { display: none; }
+.state-active .ai-voice-connect-btn .icon-x { display: block; }
+
+/* Zustand 3: Hover im verbundenen Zustand (Weiß wechselt zu Rot) */
+.state-active .ai-voice-connect-btn:hover:not(:disabled) {
+    color: #ff4444; /* Knallrotes X beim Hovern */
+    background: rgba(255, 68, 68, 0.15); /* Dezenter roter Schimmer */
+    border-color: rgba(255, 68, 68, 0.5);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
