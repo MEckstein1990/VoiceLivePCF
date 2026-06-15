@@ -4,6 +4,7 @@
     <external-service-usage enabled="true">
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
+      <domain>login.microsoftonline.com</domain>
     </external-service-usage>
     
     <property name="AgentId" display-name-key="AgentId_Display" description-key="AgentId_Desc" of-type="SingleLine.Text" usage="input" required="true" />
@@ -12,6 +13,9 @@
     <property name="TokenEndpoint" display-name-key="TokenEndpoint_Display" description-key="TokenEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     
     <property name="ProxyKey" display-name-key="ProxyKey_Display" description-key="ProxyKey_Desc" of-type="SingleLine.Text" usage="input" required="true" />
+    <property name="MsalClientId" display-name-key="MsalClientId_Display" description-key="MsalClientId_Desc" of-type="SingleLine.Text" usage="input" required="false" />
+    <property name="TenantId" display-name-key="TenantId_Display" description-key="TenantId_Desc" of-type="SingleLine.Text" usage="input" required="false" />
+    <property name="DataverseOrgUrl" display-name-key="DataverseOrgUrl_Display" description-key="DataverseOrgUrl_Desc" of-type="SingleLine.Text" usage="input" required="false" />
     <property name="Connected" display-name-key="Connected_Display" description-key="Connected_Desc" of-type="TwoOptions" usage="bound" required="false" />
     
     <property name="AgentVoice" display-name-key="AgentVoice_Display" description-key="AgentVoice_Desc" of-type="Enum" usage="input" required="true">
