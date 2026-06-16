@@ -352,13 +352,14 @@
 
 .ai-voice-status-text {
     font-size: 13px;
-    color: #666;                                  /* Standard: gedämpftes Grau */
+    color: #666;
     margin: 0;
-    min-height: 18px;                             /* verhindert Layout-Sprung wenn Text wechselt */
+    min-height: 18px;
     letter-spacing: 0.2px;
     transition: all 0.3s;
     text-align: center;
-    animation: fade-in 0.3s ease;                 /* Text blendet bei jedem Wechsel kurz ein */
+    animation: fade-in 0.3s ease;
+    flex: 1;
 }
 
 /* Textfarbe passt sich dem Zustand an */
@@ -377,11 +378,16 @@
     justify-content: space-between;
     align-items: center;
     flex-shrink: 0;
-    margin-top: auto; /* Hält den Footer immer unten verankert */
-    padding: 8px 4px 0 4px;
+    margin-top: auto;
+    padding: 8px calc(33.33% - 24px) 0;
     min-height: 52px;
     position: relative;
     z-index: 10;
+    box-sizing: border-box;
+}
+
+.ai-voice-config-warning {
+    display: none;
 }
 
 .ai-voice-action-btn {
@@ -413,18 +419,11 @@
     stroke-width: 2;
 }
 
-/* ── MUTE BUTTON LOGIK (Fix gegen Doppel-Mikrofon) ───────────────────── */
+/* ── MUTE BUTTON LOGIK ────────────────────────────────────────────────── */
 .ai-voice-mute-btn {
-    opacity: 0;
-    pointer-events: none;
-    transform: scale(0.8);
-    transition: opacity 0.3s, transform 0.3s;
-}
-
-.state-active .ai-voice-mute-btn {
     opacity: 1;
     pointer-events: auto;
-    transform: scale(1);
+    transition: opacity 0.3s, transform 0.3s;
 }
 
 /* Sichtbarkeits-Wechsel der Icons */
@@ -438,6 +437,38 @@
     color: #ff4444;
     background: rgba(255, 68, 68, 0.12);
     border-color: rgba(255, 68, 68, 0.3);
+}
+
+/* ── MUTED-Zustand: Orb-Animationen + Ringe unterdrücken ─────────────── */
+/* Wenn gemuted UND nicht KI-sprechend → statischer blauer Orb ohne Animation */
+.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-orb {
+    animation: none !important;
+    box-shadow:
+        0 0 25px rgba(74, 158, 255, 0.15),
+        inset 0 0 35px rgba(0, 0, 0, 0.5);
+    background: radial-gradient(circle at 35% 35%, #1e2a4a, #0d1220);
+    transform: scale(1) !important;
+}
+
+.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-orb-icon {
+    color: #5a90d4;
+    opacity: 0.6;
+}
+
+/* Alle Wellenringe bei Mute stoppen (außer KI spricht) */
+.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-ring {
+    animation: none !important;
+    border-color: transparent !important;
+}
+
+/* VU-Meter bei Mute ausblenden */
+.ai-voice-container.muted .ai-voice-vu-meter {
+    opacity: 0;
+}
+
+/* Status-Text bei Mute */
+.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-status-text {
+    color: #666;
 }
 
 /* ── CONNECT BUTTON LOGIK (2 Zustände: Wellen oder X) ───────────────── */

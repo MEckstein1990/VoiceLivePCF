@@ -6,14 +6,6 @@
  * die Azure KI Foundry (Project AI) für das Agenten-Backend und die
  * Azure Voice Live API für die Sprachverarbeitung.
  *
- * Hauptmerkm/**
- * Voice Live API – Real-time Voice Chat – PCF Control
- *
- * Dieses Power Apps Component Framework (PCF) Control implementiert einen
- * bidirektionalen Echtzeit-Sprachdialog mit einem KI-Assistenten. Es nutzt
- * die Azure KI Foundry (Project AI) für das Agenten-Backend und die
- * Azure Voice Live API für die Sprachverarbeitung.
- *
  * Hauptmerkmale:
  * - **Echtzeit-Kommunikation:** Streaming von Audio zum Server und Empfang von
  *   Audio-Antworten in Echtzeit über WebSockets.
@@ -454,6 +446,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       classes.push("chat-open");
     }
 
+    if (this.isMuted) {
+      classes.push("muted");
+    }
+
     this.container.className = classes.join(" ");
 
     const labels: Record<ControlState, { text: string; header: string }> = {
@@ -486,7 +482,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     const info = labels[newState];
 
-    if (this.statusTextEl) this.statusTextEl.textContent = info.text;
+    // Bei Mute + Listening: angepassten Statustext zeigen
+    if (this.statusTextEl) {
+      this.statusTextEl.textContent =
+        this.isMuted && newState === "listening"
+          ? "Mikrofon stummgeschaltet"
+          : info.text;
+    }
 
     if (this.statusHeaderEl) this.statusHeaderEl.textContent = info.header;
 
@@ -924,68 +926,49 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         // 4. Erst NACH dem Cancel den State wechseln
         this.currentUserTranscript = "";
-
         this.lastUserBubbleEl = null;
-
         this.setState("user-speaking");
-
         break;
       }
 
       case "input_audio_buffer.speech_stopped":
         this.setState("listening");
-
         break;
 
       case "response.created":
         this.currentAiTranscript = "";
-
         this.lastAiBubbleEl = null;
-
         this.chatMessages.push({ role: "ai", text: "" });
-
         this.addChatBubble("ai", "\u2026");
-
         this.setState("ai-speaking");
-
         break;
 
       case "response.audio.delta":
         if (msg.delta && this.controlState === "ai-speaking")
           this.playAudioDelta(msg.delta);
-
         break;
 
       case "response.done":
         this.log("Server meldet response.done.");
-
         // Lock lösen
         this.isCancelling = false;
-
         if (this.currentAiTranscript) {
           this.transcriptText += `[KI]: ${this.currentAiTranscript}\n`;
-
           const lastAi = this.chatMessages
             .slice()
             .reverse()
             .find((m: ChatMessage) => m.role === "ai");
-
           if (lastAi) lastAi.text = this.currentAiTranscript;
-
           this.updateLastAiBubble();
-
           this.currentAiTranscript = "";
-
           this.notifyOutputChanged();
         }
 
         this.lastAiBubbleEl = null;
-
         // Wichtig: Nur auf 'listening' schalten, wenn der User nicht gerade angefangen hat zu sprechen!
         if (this.controlState === "ai-speaking") {
           this.setState("listening");
         }
-
         break;
 
       // ── Transkriptions-Events ────────────────────────────────────
@@ -993,19 +976,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "conversation.item.input_audio_transcription.delta":
         if (msg.delta) {
           this.currentUserTranscript += msg.delta;
-
           this.updateLastUserBubble();
         }
-
         break;
 
       // Finales User-Transkript (kompatibel mit Realtime API)
       case "conversation.item.input_audio_transcription.completed":
         if (msg.transcript) {
           this.currentUserTranscript = msg.transcript;
-
           this.transcriptText += `[User]: ${msg.transcript}\n`;
-
           // Wenn wir schon eine Streaming-Bubble haben, aktualisiere sie
           if (this.lastUserBubbleEl) {
             const lastUser = this.chatMessages
@@ -1021,28 +1000,21 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
             this.addChatBubble("user", msg.transcript);
           }
-
           this.currentUserTranscript = "";
-
           this.lastUserBubbleEl = null;
-
           this.notifyOutputChanged();
         }
-
         break;
 
       // KI-Transkript (Streaming)
       case "response.audio_transcript.delta":
         if (msg.delta) {
           this.currentAiTranscript += msg.delta;
-
           const lastAiDelta = this.chatMessages
             .slice()
             .reverse()
             .find((m: ChatMessage) => m.role === "ai");
-
           if (lastAiDelta) lastAiDelta.text = this.currentAiTranscript;
-
           this.updateLastAiBubble();
         }
 
@@ -1051,14 +1023,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "response.audio_transcript.done":
         if (msg.transcript) {
           this.currentAiTranscript = msg.transcript;
-
           const lastAiDone = this.chatMessages
             .slice()
             .reverse()
             .find((m: ChatMessage) => m.role === "ai");
-
           if (lastAiDone) lastAiDone.text = msg.transcript;
-
           this.updateLastAiBubble();
         }
 
@@ -1355,7 +1324,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   private toggleChat(): void {
     this.chatOpen = !this.chatOpen;
-
     this.container.classList.toggle("chat-open", this.chatOpen);
 
     if (this.chatOpen) this.scrollToBottom();
@@ -1481,10 +1449,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     if (this.isMuted && this.controlState === "user-speaking") {
       this.log(
-        "Erzwinge Commit des Audio-Puffers (Mute während des Sprechens)",
+        "Mute während Sprechen: Commit + Response erzwingen",
       );
-
+      // Audio-Puffer abschließen und explizit KI-Antwort anfordern
       this.sendJson({ type: "input_audio_buffer.commit" });
+      this.sendJson({ type: "response.create" });
+      this.setState("listening");
+    } else {
+      // Container-Klasse aktualisieren (muted-Zustand für CSS)
+      this.container.classList.toggle("muted", this.isMuted);
     }
   }
 
