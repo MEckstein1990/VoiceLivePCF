@@ -4,6 +4,7 @@
     <external-service-usage enabled="true">
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
+      <domain>*.azurewebsites.net</domain>
       <domain>login.microsoftonline.com</domain>
     </external-service-usage>
     
