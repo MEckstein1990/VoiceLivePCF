@@ -82,6 +82,34 @@
   <data name="ProxyKey_Desc" xml:space="preserve">
     <value>Key für den WebSocket-Proxy zur Authentifizierung.</value>
   </data>
+  <!-- UserId -->
+  <data name="UserId_Display" xml:space="preserve">
+    <value>Benutzer-ID</value>
+  </data>
+  <data name="UserId_Desc" xml:space="preserve">
+    <value>ID des aktuellen Dataverse-Benutzers, wird als caller-id an den Proxy übergeben.</value>
+  </data>
+  <!-- MsalClientId -->
+  <data name="MsalClientId_Display" xml:space="preserve">
+    <value>MSAL Client ID</value>
+  </data>
+  <data name="MsalClientId_Desc" xml:space="preserve">
+    <value>Client-ID der Azure AD App-Registrierung für die MSAL-Authentifizierung.</value>
+  </data>
+  <!-- TenantId -->
+  <data name="TenantId_Display" xml:space="preserve">
+    <value>Tenant ID</value>
+  </data>
+  <data name="TenantId_Desc" xml:space="preserve">
+    <value>Azure AD Tenant-ID für die MSAL-Authentifizierung.</value>
+  </data>
+  <!-- DataverseOrgUrl -->
+  <data name="DataverseOrgUrl_Display" xml:space="preserve">
+    <value>Dataverse Org URL</value>
+  </data>
+  <data name="DataverseOrgUrl_Desc" xml:space="preserve">
+    <value>Basis-URL der Dataverse-Organisation (ohne abschließenden Slash), wird für Dataverse-Zugriffe verwendet.</value>
+  </data>
   <!-- Connected -->
   <data name="Connected_Display" xml:space="preserve">
     <value>Connected</value>
@@ -110,12 +138,19 @@
   <data name="VadThreshold_Desc" xml:space="preserve">
     <value>Wert zwischen 0.1 und 1.0. Hoeherer Wert macht die Erkennung unempfindlicher gegen Nebengeraeusche.</value>
   </data>
-    <!-- AgentLanguage -->
+  <!-- AgentLanguage -->
   <data name="AgentLanguage_Display" xml:space="preserve">
     <value>Sprache</value>
   </data>
   <data name="AgentLanguage_Desc" xml:space="preserve">
-    <value>Die primaere Sprache fuer die Spracherkennung und Transkription (z.B. de, en, fr).</value>
+    <value>Die primaere Sprache fuer die Spracherkennung und Transkription.</value>
+  </data>
+  <!-- VoiceSpeed -->
+  <data name="VoiceSpeed_Display" xml:space="preserve">
+    <value>Sprachgeschwindigkeit</value>
+  </data>
+  <data name="VoiceSpeed_Desc" xml:space="preserve">
+    <value>Die Geschwindigkeit, mit der die KI spricht.</value>
   </data>
   <!-- ConnectionStatus -->
   <data name="VLC_ConnectionStatus_Display" xml:space="preserve">

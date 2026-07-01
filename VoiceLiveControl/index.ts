@@ -116,6 +116,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private silenceDurationMs = 2000;
   private vadThreshold = 0.5;
   private agentLanguage = "de";
+  private voiceSpeed = "1.0";
 
   /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
   // private fetchedToken = '';
@@ -142,6 +143,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_AGENT_LANGUAGE = "de";
   private static readonly DEFAULT_SILENCE_DURATION = 2000;
   private static readonly DEFAULT_VAD_THRESHOLD = 0.5;
+  private static readonly DEFAULT_VOICE_SPEED = "1.0";
 
   // ── DOM-Referenzen ───────────────────────────────────────────────────
   private orbEl!: HTMLDivElement;
@@ -326,65 +328,54 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
     // PCF-Testharnisch liefert "val" als Platzhalter für alle Properties –
-
     // in diesem Fall greifen die eingebauten Defaults.
-
     const prop = (raw: string | null | undefined, def: string): string =>
       raw && raw !== "val" && raw !== "undefined" ? raw : def;
-
     this.agentId = prop(
       context.parameters.AgentId.raw,
       VoiceLiveControl.DEFAULT_AGENT_ID,
     );
-
     this.agentProjectName = prop(
       context.parameters.AgentProjectName.raw,
       VoiceLiveControl.DEFAULT_AGENT_PROJECT,
     );
-
     this.tokenEndpoint = prop(
       context.parameters.TokenEndpoint.raw,
       VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT,
     );
-
     this.proxyKey = prop(
       context.parameters.ProxyKey.raw,
       VoiceLiveControl.DEFAULT_PROXY_KEY,
     );
-
     this.agentendpoint = prop(
       context.parameters.AgentEndpoint.raw,
       VoiceLiveControl.DEFAULT_AGENT_ENDPOINT,
     );
-
     this.agentVoice = prop(
       context.parameters.AgentVoice.raw,
       VoiceLiveControl.DEFAULT_AGENT_VOICE,
     );
-
     this.agentLanguage = prop(
       context.parameters.AgentLanguage.raw,
       VoiceLiveControl.DEFAULT_AGENT_LANGUAGE,
     );
-
+    this.voiceSpeed = prop(
+      context.parameters.VoiceSpeed.raw,
+      VoiceLiveControl.DEFAULT_VOICE_SPEED,
+    );
     this.msalClientId = (context.parameters.MsalClientId.raw ?? "").trim();
-
     this.tenantId = (context.parameters.TenantId.raw ?? "").trim();
-
     this.dataverseOrgUrl = (context.parameters.DataverseOrgUrl.raw ?? "")
       .replace(/\/$/, "")
       .trim();
-
     this.silenceDurationMs =
       typeof context.parameters.SilenceDurationMs.raw === "number"
         ? context.parameters.SilenceDurationMs.raw
         : VoiceLiveControl.DEFAULT_SILENCE_DURATION;
-
     this.vadThreshold =
       typeof context.parameters.VadThreshold.raw === "number"
         ? context.parameters.VadThreshold.raw
         : VoiceLiveControl.DEFAULT_VAD_THRESHOLD;
-
     // Canvas Apps: context.userSettings.userId ist nicht verfügbar (nur Model-Driven Apps).
     // Die User-GUID wird als PCF-Input-Property "UserId" übergeben.
     // Canvas App Formel: LookUp(SystemUsers, 'Azure AD Object ID' = User().ObjectId, SystemUserId)
@@ -392,7 +383,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     if (!this.loggedInit) {
       this.loggedInit = true;
-
       this.log(`Init: agentId=${this.agentId}, endpoint=${this.agentendpoint}`);
     }
 
@@ -648,6 +638,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
             type: "azure-standard",
             name: this.agentVoice,
             temperature: 0.8,
+            rate: this.voiceSpeed,
           },
 
           input_audio_format: "pcm16",
