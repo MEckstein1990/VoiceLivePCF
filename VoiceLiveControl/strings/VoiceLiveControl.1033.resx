@@ -196,4 +196,17 @@
   <data name="Lang_FR" xml:space="preserve">
     <value>Französisch</value>
   </data>
+  <!-- VoiceSpeed Values -->
+  <data name="VoiceSpeed_Langsam" xml:space="preserve">
+    <value>Langsam</value>
+  </data>
+  <data name="VoiceSpeed_Mittel" xml:space="preserve">
+    <value>Mittel</value>
+  </data>
+  <data name="VoiceSpeed_Schnell" xml:space="preserve">
+    <value>Schnell</value>
+  </data>
+  <data name="VoiceSpeed_SehrSchnell" xml:space="preserve">
+    <value>Sehr schnell</value>
+  </data>
 </root>
