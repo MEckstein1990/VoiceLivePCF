@@ -129,6 +129,24 @@ dotnet build /p:configuration=Release
 # → ZIP-Datei liegt unter: Solution/bin/Release/Solution.zip
 ```
 
+## Versionierung
+
+Vor jedem PowerApps-Import müssen **beide** Versionen synchron hochgezählt werden:
+
+1. **Control-Version** in `VoiceLiveControl/ControlManifest.Input.xml`:
+   ```xml
+   <control ... version="1.20.0" ...>
+   ```
+
+2. **Solution-Version** in `Solution/src/Other/Solution.xml`:
+   ```xml
+   <Version>1.20.0.0</Version>
+   ```
+
+> Power Apps aktualisiert ein bereits importiertes Control nur bei **höherer** Versionsnummer. Wird die Version nicht erhöht, greift der neue Code im Zielsystem nicht.
+
+---
+
 **Import in Power Apps:**
 
 1. [make.powerapps.com](https://make.powerapps.com) öffnen
@@ -252,24 +270,6 @@ VoiceLive-PCF-Control/
 | `VoiceLiveControl/ControlManifest.Input.xml` | Definiert alle Control-Properties und Outputs sowie die freigegebenen externen Dienste (`*.services.ai.azure.com`, `*.cognitiveservices.azure.com`, `*.azurewebsites.net`, `login.microsoftonline.com`) |
 | `VoiceLiveControl/css/AiVoiceControl.css` | Dark-Mode-Design mit zustandsabhängigen Farben/Animationen: blauer Orb (Nutzer spricht), lila Orb (KI spricht), Spinner (Connecting), rote Anzeige (Error), Messenger-Style Chat-Bubbles |
 | `Solution/src/Other/Solution.xml` | Solution-Manifest mit Versionsnummer, Publisher `AdessoSE` (Prefix: `adesso`) und Package-Typ (managed + unmanaged) |
-
----
-
-## Versionierung
-
-Vor jedem PowerApps-Import müssen **beide** Versionen synchron hochgezählt werden:
-
-1. **Control-Version** in `VoiceLiveControl/ControlManifest.Input.xml`:
-   ```xml
-   <control ... version="1.20.0" ...>
-   ```
-
-2. **Solution-Version** in `Solution/src/Other/Solution.xml`:
-   ```xml
-   <Version>1.20.0.0</Version>
-   ```
-
-> Power Apps aktualisiert ein bereits importiertes Control nur bei **höherer** Versionsnummer. Wird die Version nicht erhöht, greift der neue Code im Zielsystem nicht.
 
 ---
 
