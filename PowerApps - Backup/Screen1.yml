@@ -1,0 +1,58 @@
+# App.OnStart:
+#   // var_connect setzt VoiceLiveControl1.Connected; Es soll erst auf true gesetzt werden, wenn das LookUp die SystemUserID korrekt gesetzt hat.
+#   Set(var_connect; false);;
+#   Set(SystemUserID; LookUp(Benutzer;'Primäre E-Mail-Adresse' = User().Email).'Benutzer (systemuserid)');;
+#   // Variable wird benötigt um zu prüfen ob das mobile gerät ein iOS Gerät ist.
+#   Set(VarHostOS;Host.OSType);;
+#   If(VarHostOS = "iOS";"";Set(Var_Video; true));;
+  
+#   Set(var_connect; true)
+
+Screens:
+  Screen1:
+    Properties:
+      Fill: =RGBA(0, 0, 0, 1)
+      LoadingSpinnerColor: =RGBA(56, 96, 178, 1)
+    Children:
+      - Video1:
+          Control: Video@2.4.2
+          Properties:
+            AutoStart: =Var_Video
+            BorderColor: =RGBA(0, 18, 107, 1)
+            Fill: =RGBA(0, 0, 0, 0)
+            Height: =44
+            Loop: =Var_Video
+            Media: ='VideoSchwarz-old'
+            ShowControls: =false
+            Width: =49
+            X: =15
+            Y: =940
+      # - VoiceLiveControl1:
+      #     Control: CodeComponent
+      #     ComponentName: adesso_KoRaVoiceControl.VoiceLiveControl
+      #     Properties:
+      #       AgentEndpoint: ="https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com"
+      #       AgentId: ="dataverse-proxy-agent"
+      #       AgentLanguage: ='KoRaVoiceControl.VoiceLiveControl.AgentLanguage'.de
+      #       AgentProjectName: ="proj-default"
+      #       AgentVoice: ='KoRaVoiceControl.VoiceLiveControl.AgentVoice'.'de-DE-Seraphina:DragonHDLatestNeural'
+      #       Connected: =var_connect
+      #       DataverseOrgUrl: ="https://enbwkommbezkora.crm4.dynamics.com"
+      #       Height: =1136
+      #       MsalClientId: ="e850e91d-15e6-4055-9aff-c272ad66e1aa"
+      #       ProxyKey: ="qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057"
+      #       TenantId: ="ee920d54-46e4-4e1e-aa99-6d010a689325"
+      #       TokenEndpoint: ="https://func-voicelive-kora.azurewebsites.net"
+      #       UserId: =SystemUserID
+      #       Width: =640
+      - Label1:
+          Control: Label@2.5.1
+          Properties:
+            BorderColor: =RGBA(0, 18, 107, 1)
+            Color: =RGBA(255, 255, 255, 1)
+            Font: =Font.'Open Sans'
+            Height: =21
+            Size: =10
+            Text: ="V1.2 " & Var_Video & " " & SystemUserID
+            Width: =640
+            Y: =1115
