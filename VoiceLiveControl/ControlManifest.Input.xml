@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest>
-  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.17.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
+  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.20.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
     <external-service-usage enabled="true">
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
@@ -13,6 +13,7 @@
     <property name="AgentEndpoint" display-name-key="AgentEndpoint_Display" description-key="AgentEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="TokenEndpoint" display-name-key="TokenEndpoint_Display" description-key="TokenEndpoint_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     
+    <property name="UserId" display-name-key="UserId_Display" description-key="UserId_Desc" of-type="SingleLine.Text" usage="input" required="false" />
     <property name="ProxyKey" display-name-key="ProxyKey_Display" description-key="ProxyKey_Desc" of-type="SingleLine.Text" usage="input" required="true" />
     <property name="MsalClientId" display-name-key="MsalClientId_Display" description-key="MsalClientId_Desc" of-type="SingleLine.Text" usage="input" required="false" />
     <property name="TenantId" display-name-key="TenantId_Display" description-key="TenantId_Desc" of-type="SingleLine.Text" usage="input" required="false" />

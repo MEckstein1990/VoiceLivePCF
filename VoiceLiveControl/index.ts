@@ -24,7 +24,7 @@
  */
 
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
-import * as msal from "@azure/msal-browser";
+// import * as msal from "@azure/msal-browser"; // MSAL deaktiviert – caller-id wird über PCF userId übergeben
 
 /**
  * Zustandsmodell des Controls – steuert UI-Darstellung und erlaubte Aktionen.
@@ -120,12 +120,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
   // private fetchedToken = '';
 
-  // ── MSAL / Dataverse User-Token ──────────────────────────────────────
+  // ── MSAL / Dataverse User-Token (deaktiviert) ─────────────────────────
   private msalClientId = "";
   private tenantId = "";
   private dataverseOrgUrl = "";
-  private msalInstance: msal.PublicClientApplication | null = null;
-  private dataverseUserToken = "";
+  private callerId = "";
+  // private msalInstance: msal.PublicClientApplication | null = null;
+  // private dataverseUserToken = "";
 
   // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
   private static readonly DEFAULT_AGENT_ENDPOINT =
@@ -376,6 +377,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         ? context.parameters.VadThreshold.raw
         : VoiceLiveControl.DEFAULT_VAD_THRESHOLD;
 
+    // Canvas Apps: context.userSettings.userId ist nicht verfügbar (nur Model-Driven Apps).
+    // Die User-GUID wird als PCF-Input-Property "UserId" übergeben.
+    // Canvas App Formel: LookUp(SystemUsers, 'Azure AD Object ID' = User().ObjectId, SystemUserId)
+    this.callerId = (context.parameters.UserId?.raw as string | null | undefined) ?? "";
+
     if (!this.loggedInit) {
       this.loggedInit = true;
 
@@ -542,57 +548,22 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     return data.token;
   }
 
-  /**
-     * Holt ein Dataverse-Token für den eingeloggten User per MSAL.
-     * Nutzt ssoSilent (hidden iframe, kein Popup) mit Fallback auf acquireTokenPopup.
-     * Das Token wird von Voice Live als Bearer an den Dataverse MCP Server gesendet,
-     * wodurch Row-Level Security automatisch durchgesetzt wird.
-     */
-  private async acquireDataverseToken(): Promise<void> {
-    if (!this.msalClientId || !this.tenantId || !this.dataverseOrgUrl) return;
-
-    if (!this.msalInstance) {
-      this.msalInstance = new msal.PublicClientApplication({
-        auth: {
-          clientId: this.msalClientId,
-
-          authority: `https://login.microsoftonline.com/${this.tenantId}`,
-
-          redirectUri: window.location.origin,
-        },
-
-        cache: {
-          cacheLocation: "sessionStorage",
-        },
-      });
-
-      await this.msalInstance.initialize();
-    }
-
-    const scopes = [`${this.dataverseOrgUrl}/.default`];
-
-    try {
-      const result = await this.msalInstance.ssoSilent({ scopes });
-
-      this.dataverseUserToken = result.accessToken;
-
-      this.log("Dataverse User-Token per ssoSilent erhalten");
-    } catch {
-      this.log("ssoSilent fehlgeschlagen, versuche Popup...");
-
-      try {
-        const result = await this.msalInstance.acquireTokenPopup({ scopes });
-
-        this.dataverseUserToken = result.accessToken;
-
-        this.log("Dataverse User-Token per Popup erhalten");
-      } catch (popupErr) {
-        this.log(`Dataverse Token-Fehler: ${popupErr}`);
-
-        this.dataverseUserToken = "";
-      }
-    }
-  }
+  // ── acquireDataverseToken deaktiviert (MSAL nicht benötigt) ────────────
+  // private async acquireDataverseToken(): Promise<void> {
+  //   if (!this.msalClientId || !this.tenantId || !this.dataverseOrgUrl) return;
+  //   if (!this.msalInstance) {
+  //     this.msalInstance = new msal.PublicClientApplication({ ... });
+  //     await this.msalInstance.initialize();
+  //   }
+  //   const scopes = [`${this.dataverseOrgUrl}/.default`];
+  //   try {
+  //     const result = await this.msalInstance.ssoSilent({ scopes });
+  //     this.dataverseUserToken = result.accessToken;
+  //   } catch {
+  //     const result = await this.msalInstance.acquireTokenPopup({ scopes });
+  //     this.dataverseUserToken = result.accessToken;
+  //   }
+  // }
 
   private async startSession(isReconnect = false): Promise<void> {
     if (
@@ -613,11 +584,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.setState(isReconnect ? "reconnecting" : "connecting");
 
     try {
-      // Dataverse User-Token per MSAL holen (falls konfiguriert)
-
-      if (this.msalClientId && this.tenantId && this.dataverseOrgUrl) {
-        await this.acquireDataverseToken();
-      }
+      // Dataverse User-Token per MSAL deaktiviert – caller-id wird via PCF userId übergeben
+      // if (this.msalClientId && this.tenantId && this.dataverseOrgUrl) {
+      //   await this.acquireDataverseToken();
+      // }
 
       // Proxy-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
 
@@ -630,7 +600,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         `?key=${encodeURIComponent(this.proxyKey)}` +
         `&agent-name=${encodeURIComponent(this.agentId)}` +
         `&agent-project-name=${encodeURIComponent(this.agentProjectName)}` +
-        `&endpoint=${encodeURIComponent(this.agentendpoint)}`;
+        `&endpoint=${encodeURIComponent(this.agentendpoint)}` + 
+        `&caller-id=${encodeURIComponent(this.callerId)}`;
 
       this.log(`WebSocket öffnet: wss://${proxyHost}/api/voice-live/ws`);
 
@@ -645,13 +616,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         this.reconnectAttempt = 0;
 
-        // Auth-Message mit Dataverse User-Token senden (vor session.update)
-
-        if (this.dataverseUserToken) {
-          this.sendJson({ type: "auth", token: this.dataverseUserToken });
-
-          this.log("Auth-Message mit Dataverse User-Token gesendet");
-        }
+        // Auth-Message mit Dataverse User-Token deaktiviert (MSAL nicht verwendet)
+        // if (this.dataverseUserToken) {
+        //   this.sendJson({ type: "auth", token: this.dataverseUserToken });
+        // }
 
         if (!isReconnect) {
           this.transcriptText = "";
