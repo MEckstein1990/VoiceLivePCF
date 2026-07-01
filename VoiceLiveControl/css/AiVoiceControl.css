@@ -351,7 +351,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 .ai-voice-status-text {
-    font-size: 13px;
+    font-size: 18px;
     color: #666;
     margin: 0;
     min-height: 18px;
@@ -379,8 +379,8 @@
     align-items: center;
     flex-shrink: 0;
     margin-top: auto;
-    padding: 8px calc(33.33% - 24px) 0;
-    min-height: 52px;
+    padding: 12px calc(33.33% - 60px) 0;
+    min-height: 80px;
     position: relative;
     z-index: 10;
     box-sizing: border-box;
@@ -394,8 +394,8 @@
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: #a0a0b0;
-    width: 48px;
-    height: 48px;
+    width: 80px;
+    height: 80px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -412,8 +412,8 @@
 }
 
 .ai-voice-action-btn svg {
-    width: 22px;
-    height: 22px;
+    width: 32px;
+    height: 32px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2;
@@ -563,7 +563,7 @@
     border: none;
     color: #666;
     cursor: pointer;
-    padding: 6px;
+    padding: 12px;
     border-radius: 6px;
     display: flex;
     align-items: center;
@@ -572,8 +572,8 @@
 }
 
 .ai-chat-toggle svg {
-    width: 18px;
-    height: 18px;
+    width: 32px;
+    height: 32px;
 }
 
 .ai-chat-toggle:hover {
@@ -590,6 +590,14 @@
     color: #7ab8ff;
     background: rgba(74, 158, 255, 0.12);
 }
+
+/* Standard = Chat geschlossen → durchgestrichenes Icon */
+.ai-chat-toggle .icon-chat-on  { display: none; }
+.ai-chat-toggle .icon-chat-off { display: block; }
+
+/* Chat offen (.chat-open auf dem Container) → normale Sprechblase */
+.chat-open .ai-chat-toggle .icon-chat-on  { display: block; }
+.chat-open .ai-chat-toggle .icon-chat-off { display: none; }
 
 /* ── Chat-Panel Container ────────────────────────────────────────────────
    Standardmäßig versteckt. Bei .chat-open wird es sichtbar und nimmt

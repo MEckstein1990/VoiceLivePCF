@@ -24,7 +24,8 @@ var userPrompt = Environment.GetEnvironmentVariable("AGENT_USER_PROMPT")
     ?? "Bitte lies relevante Dataverse-Daten und gib mir alle Kunden aus deutschland.";
 
 var agentInstructions = Environment.GetEnvironmentVariable("AGENT_INSTRUCTIONS")
-    ?? """
+    ?? 
+    """
     Du bist ein Assistent für transkribierte Spracheingaben.
     Nutze die MCP-Tools nur wenn nötig.
     Bevorzuge Lesezugriffe.

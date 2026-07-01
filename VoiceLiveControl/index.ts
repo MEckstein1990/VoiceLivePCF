@@ -180,11 +180,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
                     <span class="ai-voice-status-header">Nicht verbunden</span>
                 </div>
                 <div style="display:flex;gap:6px">
-                    <button class="ai-chat-toggle" title="Chat-Transkript anzeigen">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                        </svg>
-                    </button>                    
+                  <button class="ai-chat-toggle" title="Chat-Transkript anzeigen">
+                    <!-- Zustand: Chat OFFEN → normale Sprechblase -->
+                    <svg class="icon-chat-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    <!-- Zustand: Chat GESCHLOSSEN → durchgestrichene Sprechblase -->
+                    <svg class="icon-chat-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        <line x1="3" y1="3" x2="21" y2="21"/>
+                    </svg>
+                  </button>                    
                 </div>
             </div>
             <div class="ai-voice-orb-area">
@@ -193,9 +199,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
                     <div class="ai-voice-ring ai-voice-ring-2"></div>
                     <div class="ai-voice-ring ai-voice-ring-3"></div>
                     <div class="ai-voice-orb">
-                        <svg class="ai-voice-orb-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3zm-1 14.93V19H9v2h6v-2h-2v-2.07A7.001 7.001 0 0 0 19 11h-2a5 5 0 0 1-10 0H5a7.001 7.001 0 0 0 6 6.93z"/>
-                        </svg>
+                      <!--
+                      <svg class="ai-voice-orb-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3zm-1 14.93V19H9v2h6v-2h-2v-2.07A7.001 7.001 0 0 0 19 11h-2a5 5 0 0 1-10 0H5a7.001 7.001 0 0 0 6 6.93z"/>
+                      </svg>
+                      -->
                     </div>
                 </div>
                 <div class="ai-voice-vu-meter">
@@ -470,17 +478,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       listening: {
         text: "Ich h\u00f6re zu\u2026",
-        header: "Verbunden (Voice Live)",
+        header: "Verbunden",
       },
 
       "user-speaking": {
         text: "Du sprichst\u2026",
-        header: "Verbunden (Voice Live)",
+        header: "Verbunden",
       },
 
       "ai-speaking": {
         text: "KI spricht\u2026",
-        header: "Verbunden (Voice Live)",
+        header: "Verbunden",
       },
 
       error: { text: errorDetail ?? "Verbindungsfehler", header: "Fehler" },
