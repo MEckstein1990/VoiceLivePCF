@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest>
-  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.20.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
+  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.23.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
     <external-service-usage enabled="true">
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
