@@ -42,6 +42,7 @@ type ControlState =
   | "reconnecting"
   | "listening"
   | "user-speaking"
+  | "ai-thinking"
   | "ai-speaking"
   | "error";
 /** Typisierung für eingehende WebSocket-Nachrichten von Voice Live API. */
@@ -83,6 +84,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private isCancelling = false;
   private isMuted = false;
   private greetingSent = false;
+  private pendingListeningTransition = false;
 
   // ── Reconnect ────────────────────────────────────────────────────────
   private intentionalClose = false;
@@ -438,7 +440,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     classes.push(`state-${newState}`);
 
-    if (["listening", "user-speaking", "ai-speaking"].includes(newState)) {
+    if (["listening", "user-speaking", "ai-thinking", "ai-speaking"].includes(newState)) {
       classes.push("state-connected");
     }
 
@@ -448,6 +450,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         "reconnecting",
         "listening",
         "user-speaking",
+        "ai-thinking",
         "ai-speaking",
       ].includes(newState)
     ) {
@@ -484,8 +487,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         header: "Verbunden",
       },
 
+      "ai-thinking": {
+        text: "KoRa denkt nach\u2026",
+        header: "Verbunden",
+      },
+
       "ai-speaking": {
-        text: "KI spricht\u2026",
+        text: "KoRa spricht\u2026",
         header: "Verbunden",
       },
 
@@ -509,6 +517,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       "reconnecting",
       "listening",
       "user-speaking",
+      "ai-thinking",
       "ai-speaking",
     ].includes(newState);
 
@@ -537,20 +546,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   private async fetchAgentToken(): Promise<string> {
     const url = `${this.tokenEndpoint.replace(/\/$/, "")}/api/voice-live/token`;
-
     const headers: Record<string, string> = {};
-
     if (this.proxyKey) headers["X-Proxy-Key"] = this.proxyKey;
-
     const resp = await fetch(url, { headers });
-
     if (!resp.ok) throw new Error(`Token-Endpoint Fehler ${resp.status}`);
-
     const data = (await resp.json()) as { token: string };
-
     if (!data.token)
       throw new Error("Token-Endpoint hat kein token-Feld zurückgegeben");
-
     return data.token;
   }
 
@@ -881,13 +883,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         break;
 
       case "input_audio_buffer.speech_started": {
-        const wasAiSpeaking = this.controlState === "ai-speaking";
+        const wasAiSpeaking = this.controlState === "ai-speaking" || this.controlState === "ai-thinking";
 
         this.log(
           `User unterbricht (Barge-In) – wasAiSpeaking=${wasAiSpeaking}`,
         );
 
         // 1. Client-Audio SOFORT hart stoppen (wichtig für die UX im Auto!)
+        this.pendingListeningTransition = false; // Barge-In überschreibt ausstehende Transition
         if (this.activeSources.length > 0) {
           for (const source of this.activeSources) {
             try {
@@ -941,11 +944,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.lastAiBubbleEl = null;
         this.chatMessages.push({ role: "ai", text: "" });
         this.addChatBubble("ai", "\u2026");
-        this.setState("ai-speaking");
+        this.setState("ai-thinking");
         break;
 
       case "response.audio.delta":
-        if (msg.delta && this.controlState === "ai-speaking")
+        // Erster Audio-Chunk: Wechsel von "denkt nach" zu "spricht"
+        if (this.controlState === "ai-thinking") {
+          this.setState("ai-speaking");
+        }
+        if (msg.delta && (this.controlState === "ai-speaking" || this.controlState === "ai-thinking"))
           this.playAudioDelta(msg.delta);
         break;
 
@@ -966,9 +973,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         }
 
         this.lastAiBubbleEl = null;
-        // Wichtig: Nur auf 'listening' schalten, wenn der User nicht gerade angefangen hat zu sprechen!
-        if (this.controlState === "ai-speaking") {
-          this.setState("listening");
+        // Auf 'listening' wechseln – aber nur wenn kein Audio mehr im Playback-Buffer ist.
+        // Falls noch Chunks abgespielt werden, warten wir auf das letzte onended.
+        if (this.controlState === "ai-speaking" || this.controlState === "ai-thinking") {
+          if (this.activeSources.length > 0) {
+            this.pendingListeningTransition = true;
+            this.log(`response.done: ${this.activeSources.length} Audio-Chunks noch im Playback – warte auf Ende`);
+          } else {
+            this.setState("listening");
+          }
         }
         break;
 
@@ -1247,6 +1260,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       const idx = this.activeSources.indexOf(source);
 
       if (idx >= 0) this.activeSources.splice(idx, 1);
+
+      // Letzter Chunk fertig abgespielt → jetzt auf 'listening' wechseln
+      if (this.activeSources.length === 0 && this.pendingListeningTransition) {
+        this.pendingListeningTransition = false;
+        if (this.controlState === "ai-speaking") {
+          this.setState("listening");
+        }
+      }
     };
 
     this.activeSources.push(source);

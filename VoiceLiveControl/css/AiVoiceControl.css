@@ -74,7 +74,8 @@
 /* Grüner Punkt wenn verbunden (egal ob listening, user- oder ai-speaking) */
 .state-connected .ai-voice-status-dot,
 .state-user-speaking .ai-voice-status-dot,
-.state-ai-speaking .ai-voice-status-dot {
+.state-ai-speaking .ai-voice-status-dot,
+.state-ai-thinking .ai-voice-status-dot {
     background: #22c55e;                          /* Grün */
 }
 
@@ -270,6 +271,29 @@
     animation: breathe-soft 3s ease-in-out infinite; /* sanfteres Atmen als im Idle (nur 4% statt 6%) */
 }
 
+/* ── AI thinking: gedämpftes Lila, langsames Pulsieren ────────────────────
+   Die KI verarbeitet (MCP-Calls, Tool-Nutzung, Thinking). Dezenter als
+   ai-speaking – signalisiert Aktivität ohne Audio-Erwartung. */
+.state-ai-thinking .ai-voice-orb {
+    box-shadow:
+        0 0 30px rgba(155, 89, 245, 0.3),
+        0 0 60px rgba(155, 89, 245, 0.1),
+        inset 0 0 30px rgba(0, 0, 0, 0.5);
+    background: radial-gradient(circle at 35% 35%, #1e1440, #110b20);
+    animation: ai-pulse 3s ease-in-out infinite;
+}
+
+.state-ai-thinking .ai-voice-orb-icon {
+    color: #a78bdb;
+    opacity: 0.7;
+}
+
+/* Keine Wellenringe beim Denken – nur der Orb pulsiert dezent */
+.state-ai-thinking .ai-voice-ring {
+    animation: none;
+    border-color: transparent;
+}
+
 /* ── AI speaking: lila/violette Wellen ───────────────────────────────────
    Die KI spricht: Farbwechsel zu Lila. Gleiche Wellenring-Logik wie user-speaking,
    aber langsamer (1.8s statt 1.2s) und in Violett statt Blau. */
@@ -365,6 +389,7 @@
 /* Textfarbe passt sich dem Zustand an */
 .state-user-speaking .ai-voice-status-text { color: #60a5fa; }  /* Blau */
 .state-ai-speaking .ai-voice-status-text   { color: #c084fc; }  /* Lila */
+.state-ai-thinking .ai-voice-status-text   { color: #a78bdb; }  /* Gedämpftes Lila */
 .state-connecting .ai-voice-status-text    { color: #f59e0b; }  /* Orange */
 .state-error .ai-voice-status-text         { color: #ff6b6b; }  /* Rot */
 
@@ -441,7 +466,7 @@
 
 /* ── MUTED-Zustand: Orb-Animationen + Ringe unterdrücken ─────────────── */
 /* Wenn gemuted UND nicht KI-sprechend → statischer blauer Orb ohne Animation */
-.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-orb {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-orb {
     animation: none !important;
     box-shadow:
         0 0 25px rgba(74, 158, 255, 0.15),
@@ -450,13 +475,13 @@
     transform: scale(1) !important;
 }
 
-.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-orb-icon {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-orb-icon {
     color: #5a90d4;
     opacity: 0.6;
 }
 
 /* Alle Wellenringe bei Mute stoppen (außer KI spricht) */
-.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-ring {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-ring {
     animation: none !important;
     border-color: transparent !important;
 }
@@ -467,7 +492,7 @@
 }
 
 /* Status-Text bei Mute */
-.ai-voice-container.muted:not(.state-ai-speaking) .ai-voice-status-text {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-status-text {
     color: #666;
 }
 
