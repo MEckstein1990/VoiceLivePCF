@@ -55,6 +55,14 @@ interface ServerEvent {
   transcript?: string;
   error?: { message: string };
   warning?: { message: string };
+  /** MCP-Tool-Aufruf Item (bei response.output_item.added mit type=mcp_call). */
+  item?: {
+    type?: string;
+    name?: string;
+    server_label?: string;
+  };
+  /** Finale Tool-Argumente als JSON-String (bei response.mcp_call_arguments.done). */
+  arguments?: string;
 }
 
 /** Einzelne Chat-Nachricht für die visuelle Darstellung im Chat-Panel. */
@@ -85,6 +93,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private isMuted = false;
   private greetingSent = false;
   private pendingListeningTransition = false;
+  private currentToolName: string | null = null;
 
   // ── Reconnect ────────────────────────────────────────────────────────
   private intentionalClose = false;
@@ -149,6 +158,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_VAD_THRESHOLD = 0.5;
   private static readonly DEFAULT_VOICE_SPEED = "1.0";
   private static readonly DEFAULT_USER_NAME = "";
+
+  /** Benutzerfreundliche Anzeigenamen für Dataverse-Tabellen */
+  private static readonly TABLE_DISPLAY_NAMES: Record<string, string> = {
+    account: "Kunden",
+    contact: "Kontakte",
+    netzebw_kora_minutes: "Protokolle",
+    opportunity: "Verkaufschancen",
+    incident: "Anfragen",
+    task: "Aufgaben",
+    appointment: "Termine",
+  };
 
   // ── DOM-Referenzen ───────────────────────────────────────────────────
   private orbEl!: HTMLDivElement;
@@ -530,6 +550,55 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     if (this.orbEl) this.orbEl.style.transform = "";
 
     this.notifyOutputChanged();
+  }
+
+  /** Erzeugt benutzerfreundlichen Status-Text für einen MCP-Tool-Aufruf */
+  private getToolDisplayText(toolName: string, args?: string): string {
+    try {
+      const parsed = args ? JSON.parse(args) : null;
+
+      if (toolName === "read_query" && parsed?.querytext) {
+        const match = parsed.querytext.match(/FROM\s+(\w+)/i);
+        const table = match?.[1];
+        const displayName = table
+          ? VoiceLiveControl.TABLE_DISPLAY_NAMES[table] || table
+          : "Daten";
+        return `Durchsuche ${displayName}\u2026`;
+      }
+
+      if (toolName === "create_record" && parsed?.tablename) {
+        const displayName =
+          VoiceLiveControl.TABLE_DISPLAY_NAMES[parsed.tablename] || parsed.tablename;
+        return `Speichere ${displayName}\u2026`;
+      }
+
+      if (toolName === "update_record") {
+        return "Aktualisiere Daten\u2026";
+      }
+
+      if (toolName === "delete_record") {
+        return "L\u00f6sche Eintrag\u2026";
+      }
+    } catch {
+      // JSON-Parse fehlgeschlagen – Fallback
+    }
+
+    if (toolName.startsWith("read") || toolName.startsWith("search") || toolName.startsWith("list")) {
+      return "Durchsuche Daten\u2026";
+    }
+    if (toolName.startsWith("create") || toolName.startsWith("save") || toolName.startsWith("write")) {
+      return "Speichere Daten\u2026";
+    }
+    return "Verarbeite Anfrage\u2026";
+  }
+
+  /** Setzt den Status-Text f\u00fcr einen aktiven Tool-Aufruf (ohne State-Wechsel) */
+  private setToolStatus(toolName: string, args?: string): void {
+    const text = this.getToolDisplayText(toolName, args);
+    if (this.statusTextEl && (this.controlState === "ai-thinking" || this.controlState === "ai-speaking")) {
+      this.statusTextEl.textContent = text;
+    }
+    this.log(`Tool-Status: ${text}`);
   }
 
   /**
@@ -945,6 +1014,45 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.chatMessages.push({ role: "ai", text: "" });
         this.addChatBubble("ai", "\u2026");
         this.setState("ai-thinking");
+        break;
+
+      // ── MCP Tool-Call Events ─────────────────────────────────────
+      case "response.output_item.added":
+        if (msg.item?.type === "mcp_call" && msg.item.name) {
+          this.currentToolName = msg.item.name;
+          this.setToolStatus(msg.item.name);
+        }
+        break;
+
+      case "response.mcp_call.in_progress":
+        break;
+
+      case "response.mcp_call_arguments.delta":
+        break;
+
+      case "response.mcp_call_arguments.done":
+        if (this.currentToolName && msg.arguments) {
+          this.setToolStatus(this.currentToolName, msg.arguments);
+        }
+        break;
+
+      case "response.mcp_call.completed":
+        this.currentToolName = null;
+        break;
+
+      case "mcp_list_tools.in_progress":
+      case "mcp_list_tools.completed":
+        break;
+
+      case "response.output_item.done":
+      case "conversation.item.created":
+      case "conversation.item.done":
+      case "response.content_part.added":
+      case "response.content_part.done":
+      case "input_audio_buffer.committed":
+      case "session.updated":
+      case "response.audio.done":
+        // Bekannte Events ohne spezielle Behandlung
         break;
 
       case "response.audio.delta":
