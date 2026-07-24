@@ -89,6 +89,13 @@
   <data name="UserId_Desc" xml:space="preserve">
     <value>ID des aktuellen Dataverse-Benutzers, wird als caller-id an den Proxy übergeben.</value>
   </data>
+  <!-- UserName -->
+  <data name="UserName_Display" xml:space="preserve">
+    <value>Benutzername</value>
+  </data>
+  <data name="UserName_Desc" xml:space="preserve">
+    <value>Anzeigename des Benutzers. Wird für die persönliche Begrüßung durch den Agenten verwendet.</value>
+  </data>
   <!-- MsalClientId -->
   <data name="MsalClientId_Display" xml:space="preserve">
     <value>MSAL Client ID</value>

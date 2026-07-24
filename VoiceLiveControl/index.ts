@@ -82,6 +82,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private activeSources: AudioBufferSourceNode[] = [];
   private isCancelling = false;
   private isMuted = false;
+  private greetingSent = false;
 
   // ── Reconnect ────────────────────────────────────────────────────────
   private intentionalClose = false;
@@ -117,6 +118,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private vadThreshold = 0.5;
   private agentLanguage = "de";
   private voiceSpeed = "1.0";
+  private userName = "";
 
   /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
   // private fetchedToken = '';
@@ -144,6 +146,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_SILENCE_DURATION = 2000;
   private static readonly DEFAULT_VAD_THRESHOLD = 0.5;
   private static readonly DEFAULT_VOICE_SPEED = "1.0";
+  private static readonly DEFAULT_USER_NAME = "";
 
   // ── DOM-Referenzen ───────────────────────────────────────────────────
   private orbEl!: HTMLDivElement;
@@ -380,6 +383,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // Die User-GUID wird als PCF-Input-Property "UserId" übergeben.
     // Canvas App Formel: LookUp(SystemUsers, 'Azure AD Object ID' = User().ObjectId, SystemUserId)
     this.callerId = (context.parameters.UserId?.raw as string | null | undefined) ?? "";
+    this.userName = prop(
+      context.parameters.UserName.raw,
+      VoiceLiveControl.DEFAULT_USER_NAME,
+    );
+
 
     if (!this.loggedInit) {
       this.loggedInit = true;
@@ -666,7 +674,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
           input_audio_transcription: {
             model: "azure-speech",
-
             language: this.agentLanguage,
           },
         };
@@ -675,6 +682,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // der Server erwartet es als Session-Konfiguration.
         this.sendJson({ type: "session.update", session: sessionPayload });
         this.log("session.update gesendet");
+
+        
+
         // Bei Reconnect: bisherigen Gesprächsverlauf als Konversations-Items injizieren
         // (NACH session.update – sonst "max_config_attempts_exceeded")
         if (isReconnect && this.chatMessages.length > 0) {
@@ -846,6 +856,30 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.log(`← ${msg.type}`);
 
     switch (msg.type) {
+      case "session.created":
+        this.log("Session erfolgreich konfiguriert");
+        if (!this.greetingSent) {
+          const greetingText = this.userName
+            ? `[SYSTEM-HINWEIS] Begrüße den Benutzer "${this.userName}" persönlich mit Vornamen. Stelle dich als Kora vor.`
+            : "[SYSTEM-HINWEIS] Begrüße den Benutzer kurz und freundlich. Stelle dich als Kora vor.";
+          this.sendJson({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: greetingText,
+                },
+              ],
+            },
+          });
+          this.sendJson({ type: "response.create" });
+          this.greetingSent = true;
+        }
+        break;
+
       case "input_audio_buffer.speech_started": {
         const wasAiSpeaking = this.controlState === "ai-speaking";
 
@@ -1396,11 +1430,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     if (currentlyActive) {
       this.log("Connect-Button: Trenne Verbindung...");
-
       this.stopSession();
     } else {
       this.log("Connect-Button: Starte Verbindung...");
-
+      this.greetingSent = false;
       void this.startSession();
     }
   }
