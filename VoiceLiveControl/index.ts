@@ -42,6 +42,7 @@ type ControlState =
   | "reconnecting"
   | "listening"
   | "user-speaking"
+  | "ai-thinking"
   | "ai-speaking"
   | "error";
 /** Typisierung für eingehende WebSocket-Nachrichten von Voice Live API. */
@@ -54,6 +55,14 @@ interface ServerEvent {
   transcript?: string;
   error?: { message: string };
   warning?: { message: string };
+  /** MCP-Tool-Aufruf Item (bei response.output_item.added mit type=mcp_call). */
+  item?: {
+    type?: string;
+    name?: string;
+    server_label?: string;
+  };
+  /** Finale Tool-Argumente als JSON-String (bei response.mcp_call_arguments.done). */
+  arguments?: string;
 }
 
 /** Einzelne Chat-Nachricht für die visuelle Darstellung im Chat-Panel. */
@@ -82,6 +91,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private activeSources: AudioBufferSourceNode[] = [];
   private isCancelling = false;
   private isMuted = false;
+  private greetingSent = false;
+  private pendingListeningTransition = false;
+  private currentToolName: string | null = null;
 
   // ── Reconnect ────────────────────────────────────────────────────────
   private intentionalClose = false;
@@ -117,6 +129,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private vadThreshold = 0.5;
   private agentLanguage = "de";
   private voiceSpeed = "1.0";
+  private userName = "";
 
   /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
   // private fetchedToken = '';
@@ -144,6 +157,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_SILENCE_DURATION = 2000;
   private static readonly DEFAULT_VAD_THRESHOLD = 0.5;
   private static readonly DEFAULT_VOICE_SPEED = "1.0";
+  private static readonly DEFAULT_USER_NAME = "";
+
+  /** Benutzerfreundliche Anzeigenamen für Dataverse-Tabellen */
+  private static readonly TABLE_DISPLAY_NAMES: Record<string, string> = {
+    account: "Kunden",
+    contact: "Kontakte",
+    netzebw_kora_minutes: "Protokolle",
+    opportunity: "Verkaufschancen",
+    incident: "Anfragen",
+    task: "Aufgaben",
+    appointment: "Termine",
+  };
 
   // ── DOM-Referenzen ───────────────────────────────────────────────────
   private orbEl!: HTMLDivElement;
@@ -380,6 +405,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // Die User-GUID wird als PCF-Input-Property "UserId" übergeben.
     // Canvas App Formel: LookUp(SystemUsers, 'Azure AD Object ID' = User().ObjectId, SystemUserId)
     this.callerId = (context.parameters.UserId?.raw as string | null | undefined) ?? "";
+    this.userName = prop(
+      context.parameters.UserName.raw,
+      VoiceLiveControl.DEFAULT_USER_NAME,
+    );
+
 
     if (!this.loggedInit) {
       this.loggedInit = true;
@@ -430,7 +460,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     classes.push(`state-${newState}`);
 
-    if (["listening", "user-speaking", "ai-speaking"].includes(newState)) {
+    if (["listening", "user-speaking", "ai-thinking", "ai-speaking"].includes(newState)) {
       classes.push("state-connected");
     }
 
@@ -440,6 +470,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         "reconnecting",
         "listening",
         "user-speaking",
+        "ai-thinking",
         "ai-speaking",
       ].includes(newState)
     ) {
@@ -476,8 +507,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         header: "Verbunden",
       },
 
+      "ai-thinking": {
+        text: "KoRa denkt nach\u2026",
+        header: "Verbunden",
+      },
+
       "ai-speaking": {
-        text: "KI spricht\u2026",
+        text: "KoRa spricht\u2026",
         header: "Verbunden",
       },
 
@@ -501,6 +537,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       "reconnecting",
       "listening",
       "user-speaking",
+      "ai-thinking",
       "ai-speaking",
     ].includes(newState);
 
@@ -513,6 +550,55 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     if (this.orbEl) this.orbEl.style.transform = "";
 
     this.notifyOutputChanged();
+  }
+
+  /** Erzeugt benutzerfreundlichen Status-Text für einen MCP-Tool-Aufruf */
+  private getToolDisplayText(toolName: string, args?: string): string {
+    try {
+      const parsed = args ? JSON.parse(args) : null;
+
+      if (toolName === "read_query" && parsed?.querytext) {
+        const match = parsed.querytext.match(/FROM\s+(\w+)/i);
+        const table = match?.[1];
+        const displayName = table
+          ? VoiceLiveControl.TABLE_DISPLAY_NAMES[table] || table
+          : "Daten";
+        return `Durchsuche ${displayName}\u2026`;
+      }
+
+      if (toolName === "create_record" && parsed?.tablename) {
+        const displayName =
+          VoiceLiveControl.TABLE_DISPLAY_NAMES[parsed.tablename] || parsed.tablename;
+        return `Speichere ${displayName}\u2026`;
+      }
+
+      if (toolName === "update_record") {
+        return "Aktualisiere Daten\u2026";
+      }
+
+      if (toolName === "delete_record") {
+        return "L\u00f6sche Eintrag\u2026";
+      }
+    } catch {
+      // JSON-Parse fehlgeschlagen – Fallback
+    }
+
+    if (toolName.startsWith("read") || toolName.startsWith("search") || toolName.startsWith("list")) {
+      return "Durchsuche Daten\u2026";
+    }
+    if (toolName.startsWith("create") || toolName.startsWith("save") || toolName.startsWith("write")) {
+      return "Speichere Daten\u2026";
+    }
+    return "Verarbeite Anfrage\u2026";
+  }
+
+  /** Setzt den Status-Text f\u00fcr einen aktiven Tool-Aufruf (ohne State-Wechsel) */
+  private setToolStatus(toolName: string, args?: string): void {
+    const text = this.getToolDisplayText(toolName, args);
+    if (this.statusTextEl && (this.controlState === "ai-thinking" || this.controlState === "ai-speaking")) {
+      this.statusTextEl.textContent = text;
+    }
+    this.log(`Tool-Status: ${text}`);
   }
 
   /**
@@ -529,20 +615,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   private async fetchAgentToken(): Promise<string> {
     const url = `${this.tokenEndpoint.replace(/\/$/, "")}/api/voice-live/token`;
-
     const headers: Record<string, string> = {};
-
     if (this.proxyKey) headers["X-Proxy-Key"] = this.proxyKey;
-
     const resp = await fetch(url, { headers });
-
     if (!resp.ok) throw new Error(`Token-Endpoint Fehler ${resp.status}`);
-
     const data = (await resp.json()) as { token: string };
-
     if (!data.token)
       throw new Error("Token-Endpoint hat kein token-Feld zurückgegeben");
-
     return data.token;
   }
 
@@ -666,7 +745,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
           input_audio_transcription: {
             model: "azure-speech",
-
             language: this.agentLanguage,
           },
         };
@@ -675,6 +753,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // der Server erwartet es als Session-Konfiguration.
         this.sendJson({ type: "session.update", session: sessionPayload });
         this.log("session.update gesendet");
+
+        
+
         // Bei Reconnect: bisherigen Gesprächsverlauf als Konversations-Items injizieren
         // (NACH session.update – sonst "max_config_attempts_exceeded")
         if (isReconnect && this.chatMessages.length > 0) {
@@ -846,14 +927,39 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.log(`← ${msg.type}`);
 
     switch (msg.type) {
+      case "session.created":
+        this.log("Session erfolgreich konfiguriert");
+        if (!this.greetingSent) {
+          const greetingText = this.userName
+            ? `[SYSTEM-HINWEIS] Begrüße den Benutzer "${this.userName}" persönlich mit Vornamen. Stelle dich als Kora vor.`
+            : "[SYSTEM-HINWEIS] Begrüße den Benutzer kurz und freundlich. Stelle dich als Kora vor.";
+          this.sendJson({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: greetingText,
+                },
+              ],
+            },
+          });
+          this.sendJson({ type: "response.create" });
+          this.greetingSent = true;
+        }
+        break;
+
       case "input_audio_buffer.speech_started": {
-        const wasAiSpeaking = this.controlState === "ai-speaking";
+        const wasAiSpeaking = this.controlState === "ai-speaking" || this.controlState === "ai-thinking";
 
         this.log(
           `User unterbricht (Barge-In) – wasAiSpeaking=${wasAiSpeaking}`,
         );
 
         // 1. Client-Audio SOFORT hart stoppen (wichtig für die UX im Auto!)
+        this.pendingListeningTransition = false; // Barge-In überschreibt ausstehende Transition
         if (this.activeSources.length > 0) {
           for (const source of this.activeSources) {
             try {
@@ -907,11 +1013,54 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.lastAiBubbleEl = null;
         this.chatMessages.push({ role: "ai", text: "" });
         this.addChatBubble("ai", "\u2026");
-        this.setState("ai-speaking");
+        this.setState("ai-thinking");
+        break;
+
+      // ── MCP Tool-Call Events ─────────────────────────────────────
+      case "response.output_item.added":
+        if (msg.item?.type === "mcp_call" && msg.item.name) {
+          this.currentToolName = msg.item.name;
+          this.setToolStatus(msg.item.name);
+        }
+        break;
+
+      case "response.mcp_call.in_progress":
+        break;
+
+      case "response.mcp_call_arguments.delta":
+        break;
+
+      case "response.mcp_call_arguments.done":
+        if (this.currentToolName && msg.arguments) {
+          this.setToolStatus(this.currentToolName, msg.arguments);
+        }
+        break;
+
+      case "response.mcp_call.completed":
+        this.currentToolName = null;
+        break;
+
+      case "mcp_list_tools.in_progress":
+      case "mcp_list_tools.completed":
+        break;
+
+      case "response.output_item.done":
+      case "conversation.item.created":
+      case "conversation.item.done":
+      case "response.content_part.added":
+      case "response.content_part.done":
+      case "input_audio_buffer.committed":
+      case "session.updated":
+      case "response.audio.done":
+        // Bekannte Events ohne spezielle Behandlung
         break;
 
       case "response.audio.delta":
-        if (msg.delta && this.controlState === "ai-speaking")
+        // Erster Audio-Chunk: Wechsel von "denkt nach" zu "spricht"
+        if (this.controlState === "ai-thinking") {
+          this.setState("ai-speaking");
+        }
+        if (msg.delta && (this.controlState === "ai-speaking" || this.controlState === "ai-thinking"))
           this.playAudioDelta(msg.delta);
         break;
 
@@ -932,9 +1081,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         }
 
         this.lastAiBubbleEl = null;
-        // Wichtig: Nur auf 'listening' schalten, wenn der User nicht gerade angefangen hat zu sprechen!
-        if (this.controlState === "ai-speaking") {
-          this.setState("listening");
+        // Auf 'listening' wechseln – aber nur wenn kein Audio mehr im Playback-Buffer ist.
+        // Falls noch Chunks abgespielt werden, warten wir auf das letzte onended.
+        if (this.controlState === "ai-speaking" || this.controlState === "ai-thinking") {
+          if (this.activeSources.length > 0) {
+            this.pendingListeningTransition = true;
+            this.log(`response.done: ${this.activeSources.length} Audio-Chunks noch im Playback – warte auf Ende`);
+          } else {
+            this.setState("listening");
+          }
         }
         break;
 
@@ -1213,6 +1368,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       const idx = this.activeSources.indexOf(source);
 
       if (idx >= 0) this.activeSources.splice(idx, 1);
+
+      // Letzter Chunk fertig abgespielt → jetzt auf 'listening' wechseln
+      if (this.activeSources.length === 0 && this.pendingListeningTransition) {
+        this.pendingListeningTransition = false;
+        if (this.controlState === "ai-speaking") {
+          this.setState("listening");
+        }
+      }
     };
 
     this.activeSources.push(source);
@@ -1396,11 +1559,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     if (currentlyActive) {
       this.log("Connect-Button: Trenne Verbindung...");
-
       this.stopSession();
     } else {
       this.log("Connect-Button: Starte Verbindung...");
-
+      this.greetingSent = false;
       void this.startSession();
     }
   }
