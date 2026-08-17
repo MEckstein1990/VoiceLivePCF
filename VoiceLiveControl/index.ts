@@ -82,7 +82,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private ws: WebSocket | null = null;
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
-  private scriptProcessor: ScriptProcessorNode | null = null;
+  private audioWorklet: AudioWorkletNode | null = null;
   private analyser: AnalyserNode | null = null;
   private animationFrameId: number | null = null;
   private nextPlayTime = 0;
@@ -1212,7 +1212,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
      * Mikrofon-Aufnahme starten und Audio-Pipeline aufbauen.
      *
      * Pipeline:
-     *   Mikrofon → MediaStreamSource → ScriptProcessor → Resample → PCM16 → Base64 → WebSocket
+     *   Mikrofon → MediaStreamSource → AudioWorklet → Resample → PCM16 → Base64 → WebSocket
      *                                 ↘ Analyser → Visualisierung (Orb + VU-Meter)
      *
      * Kein manueller Noise Gate – Voice Live macht serverseitige Noise Suppression.
@@ -1235,7 +1235,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       });
 
       this.audioContext = this.getAudioContext();
-
       const nativeRate = this.audioContext.sampleRate;
 
       if (this.audioContext.state === "suspended") {
@@ -1252,25 +1251,46 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.analyser.fftSize = 256;
       source.connect(this.analyser);
 
-      this.scriptProcessor = this.audioContext.createScriptProcessor(
-        4096,
-        1,
-        1,
-      );
+      // 1. Worklet-Code als Vanilla JavaScript String definieren (kein TS!)
+      // Wir senden hier die Audiodaten per postMessage an den Main-Thread.
+      const workletCode = `
+        class Processor extends AudioWorkletProcessor {
+          process(inputs, outputs, parameters) {
+            const inputChannel = inputs[0]?.[0];
+            if (inputChannel) {
+              // WICHTIG: Float32Array kopieren, bevor es an den Main-Thread geht!
+              // Der Browser leert den Puffer sonst sofort wieder.
+              const bufferCopy = new Float32Array(inputChannel);
+              this.port.postMessage(bufferCopy);
+            }
+            return true;
+          }
+        }
+        registerProcessor("processor", Processor);
+      `;
 
-      source.connect(this.scriptProcessor);
+      // 2. String in eine Blob-URL umwandeln (Löst alle PCF-Pfad-Probleme)
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
 
-      this.scriptProcessor.connect(this.audioContext.destination);
+      // 3. Modul über die sichere Blob-URL laden
+      await this.audioContext.audioWorklet.addModule(workletUrl);
+      this.audioWorklet = new AudioWorkletNode(this.audioContext, "processor");
+      source.connect(this.audioWorklet);
 
-      this.scriptProcessor.onaudioprocess = (e: AudioProcessingEvent) => {
+      // 4. Daten vom Worklet empfangen und an WebSocket senden
+      this.audioWorklet.port.onmessage = (e: MessageEvent) => {
         if (this.ws?.readyState !== WebSocket.OPEN || this.isMuted) return;
 
-        const raw = e.inputBuffer.getChannelData(0);
+        const raw = e.data as Float32Array;
         const input = this.resample(raw, nativeRate);
         const pcm16 = this.float32ToPcm16(input);
         const base64 = this.bufferToBase64(pcm16.buffer as ArrayBuffer);
+        
         this.sendJson({ type: "input_audio_buffer.append", audio: base64 });
       };
+
+      this.log("AudioWorklet gestartet, Mikrofonaufnahme läuft");
 
       this.startVisualization();
     } catch (err: unknown) {
@@ -1620,9 +1640,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.ws = null;
     }
 
-    if (this.scriptProcessor) {
-      this.scriptProcessor.disconnect();
-      this.scriptProcessor = null;
+    if (this.audioWorklet) {
+      this.audioWorklet.disconnect();
+      this.audioWorklet = null;
     }
 
     if (this.mediaStream) {
