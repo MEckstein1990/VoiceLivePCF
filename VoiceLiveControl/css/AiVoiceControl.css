@@ -23,7 +23,7 @@
    "justify-content: space-between" verteilt sie gleichmäßig mit Abstand. */
 .ai-voice-container {
     width: 100%;                                  /* volle Breite des Elternelements */
-    height: 100%;                                 /* volle Höhe des Elternelements */
+    height: 100vh;                                 /* volle Höhe des Elternelements */
     min-height: 0;                                /* verhindert Flex-Overflow in fixen Hosts */
     background: rgba(10, 10, 20, 0.97);           /* fast-schwarzer Hintergrund, 97% deckend */
     display: flex;                                /* Flexbox-Layout aktivieren */
@@ -126,7 +126,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;                      /* Orb vertikal zentrieren */
-    gap: 20px;                                    /* 20px Abstand zwischen Orb und VU-Meter */
+    gap: 10px;                                    /* Abstand zwischen Orb, Statustext und VU-Meter */
     position: relative;
 }
 
@@ -372,18 +372,24 @@
 
 /* ══════════════════════════════════════════════════════════════════════════
    STATUSTEXT – zeigt den aktuellen Zustand als Text an (z. B. „Du sprichst…")
+
+   Sitzt direkt mittig UNTER dem Orb (im .ai-voice-orb-area, nicht im Footer).
+   Der negative margin-top zieht ihn nah an den Orb heran – der Orb-Wrapper ist
+   200px hoch, der Orb selbst nur 140px, es bleiben also 30px Leerraum unten.
    ══════════════════════════════════════════════════════════════════════════ */
 
 .ai-voice-status-text {
-    font-size: 18px;
-    color: #666;
-    margin: 0;
-    min-height: 18px;
+    font-size: 30px;
+    font-weight: 500;
+    color: #8a8a99;
+    margin: -16px 0 0;                            /* zieht den Text näher an den Orb */
+    min-height: 32px;
+    max-width: 100%;
     letter-spacing: 0.2px;
-    transition: all 0.3s;
+    transition: color 0.3s;
     text-align: center;
     animation: fade-in 0.3s ease;
-    flex: 1;
+    flex-shrink: 0;
 }
 
 /* Textfarbe passt sich dem Zustand an */
@@ -404,8 +410,9 @@
     align-items: center;
     flex-shrink: 0;
     margin-top: auto;
-    padding: 12px calc(33.33% - 60px) 0;
-    min-height: 80px;
+    /* padding-bottom hebt die Buttons ein Stück vom unteren Rand ab */
+    padding: 8px calc(33.33% - 68px) 32px;
+    min-height: 120px;
     position: relative;
     z-index: 10;
     box-sizing: border-box;
@@ -419,8 +426,8 @@
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: #a0a0b0;
-    width: 80px;
-    height: 80px;
+    width: 120px;
+    height: 120px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -437,8 +444,8 @@
 }
 
 .ai-voice-action-btn svg {
-    width: 32px;
-    height: 32px;
+    width: 60px;
+    height: 60px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2;
@@ -493,7 +500,7 @@
 
 /* Status-Text bei Mute */
 .ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-status-text {
-    color: #666;
+    color: #8a8a99;
 }
 
 /* ── CONNECT BUTTON LOGIK (2 Zustände: Wellen oder X) ───────────────── */
@@ -597,8 +604,8 @@
 }
 
 .ai-chat-toggle svg {
-    width: 32px;
-    height: 32px;
+    width: 40px;
+    height: 40px;
 }
 
 .ai-chat-toggle:hover {
@@ -650,16 +657,27 @@
 /* ── Split-View: Orb schrumpft wenn Chat offen ───────────────────────────
    Orb-Bereich bekommt feste Höhe, Orb-Wrapper skaliert kleiner. */
 .chat-open .ai-voice-orb-area {
-    flex: 0 0 clamp(88px, 24%, 118px);
+    flex: 0 0 auto;                               /* Höhe ergibt sich aus Orb + Statustext */
     height: auto;
-    gap: 4px;
-    min-height: 88px;
+    gap: 0;
+    min-height: 0;
+    padding-top: 4px;
     transition: all 0.3s ease;
 }
 
+/* Orb visuell auf 46 % skalieren (200px → 92px). Die negativen Margins
+   holen den Layout-Platz zurück, den transform NICHT reduziert – damit
+   klebt der Statustext auch im Chat-Modus direkt unter dem Orb. */
 .chat-open .ai-voice-orb-wrapper {
     transform: scale(0.46);
+    margin: -54px 0;
     transition: transform 0.3s ease;
+}
+
+/* Statustext im Chat-Modus: gleiche Größe, nur enger an den kleinen Orb */
+.chat-open .ai-voice-status-text {
+    margin: 0;
+    min-height: 30px;
 }
 
 /* VU-Meter im Chat-Modus ausblenden */
@@ -709,9 +727,9 @@
    Abgerundete Ecken mit einer spitzen Ecke an der Seite des Sprechers. */
 .ai-chat-bubble {
     max-width: 80%;
-    padding: 10px 14px;
+    padding: 12px 16px;
     border-radius: 16px;
-    font-size: 13px;
+    font-size: 24px;
     line-height: 1.45;
     word-wrap: break-word;
     animation: chat-bubble-in 0.25s ease-out;
@@ -737,7 +755,7 @@
    Dezenter Platzhaltertext im leeren Chat-Panel. */
 .ai-chat-empty {
     color: #555;
-    font-size: 12px;
+    font-size: 14px;
     text-align: center;
     margin: auto 0;
     padding: 20px;

@@ -233,6 +233,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
                       -->
                     </div>
                 </div>
+                <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-vu-meter">
                     <div class="ai-voice-bar"></div>
                     <div class="ai-voice-bar"></div>
@@ -264,7 +265,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
                         <line x1="12" x2="12" y1="19" y2="22"/>
                     </svg>
                 </button>
-                <p class="ai-voice-status-text">Inaktiv</p>
                 <div class="ai-voice-config-warning"></div>
                 <button class="ai-voice-action-btn ai-voice-connect-btn" title="Verbindung herstellen">
                     <svg class="icon-waves" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -931,8 +931,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.log("Session erfolgreich konfiguriert");
         if (!this.greetingSent) {
           const greetingText = this.userName
-            ? `[SYSTEM-HINWEIS] Begrüße den Benutzer "${this.userName}" persönlich mit Vornamen. Stelle dich als Kora vor.`
-            : "[SYSTEM-HINWEIS] Begrüße den Benutzer kurz und freundlich. Stelle dich als Kora vor.";
+            ? `[SYSTEM-HINWEIS] Begrüße den Benutzer "${this.userName}" persönlich mit Vornamen. Stelle dich als Kora vor. Vermeide es "EnBW" zu erwähnen.`
+            : "[SYSTEM-HINWEIS] Begrüße den Benutzer kurz und freundlich. Stelle dich als Kora vor. Vermeide es \"EnBW\" zu erwähnen.";
           this.sendJson({
             type: "conversation.item.create",
             item: {
