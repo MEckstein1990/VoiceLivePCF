@@ -23,7 +23,7 @@
    "justify-content: space-between" verteilt sie gleichmäßig mit Abstand. */
 .ai-voice-container {
     width: 100%;                                  /* volle Breite des Elternelements */
-    height: 100vh;                                 /* volle Höhe des Elternelements */
+    height: 100%;                                 /* volle Höhe des Elternelements */
     min-height: 0;                                /* verhindert Flex-Overflow in fixen Hosts */
     background: rgba(10, 10, 20, 0.97);           /* fast-schwarzer Hintergrund, 97% deckend */
     display: flex;                                /* Flexbox-Layout aktivieren */
@@ -412,7 +412,7 @@
     margin-top: auto;
     /* padding-bottom hebt die Buttons ein Stück vom unteren Rand ab */
     padding: 8px calc(33.33% - 68px) 32px;
-    min-height: 120px;
+    min-height: 132px;
     position: relative;
     z-index: 10;
     box-sizing: border-box;
