@@ -147,40 +147,22 @@
   </data>
   <!-- Ruhemodus -->
   <data name="DormantEnabled_Display" xml:space="preserve">
-    <value>Ruhemodus aktiv</value>
+    <value>Automatischen Ruhemodus verwenden</value>
   </data>
   <data name="DormantEnabled_Desc" xml:space="preserve">
-    <value>Trennt die Verbindung nach laengerer Inaktivitaet automatisch, damit keine ungewollten Gespraeche aufgezeichnet werden.</value>
+    <value>Schaltet die Ruhemodus-Funktion insgesamt ein oder aus. Eingeschaltet trennt das Control Verbindung und Mikrofon nach laengerer Inaktivitaet automatisch, damit keine ungewollten Gespraeche aufgezeichnet werden. Ausgeschaltet bleibt die Sitzung unbegrenzt offen.</value>
   </data>
   <data name="IdleTimeoutMinutes_Display" xml:space="preserve">
-    <value>Ruhemodus nach (Minuten)</value>
+    <value>Inaktivitaet bis Ruhemodus (Min.)</value>
   </data>
   <data name="IdleTimeoutMinutes_Desc" xml:space="preserve">
-    <value>Minuten ohne Datenzugriff der KI, bis der Ruhemodus angekuendigt wird. Reines Sprechen zaehlt bewusst nicht als Aktivitaet.</value>
+    <value>Minuten ohne Datenzugriff der KI, bis der Ruhemodus angekuendigt wird. Reines Sprechen zaehlt bewusst nicht als Aktivitaet, sonst wuerden fremde Gespraeche im Raum die Sitzung offen halten.</value>
   </data>
   <data name="DormantDelaySeconds_Display" xml:space="preserve">
-    <value>Wartezeit nach Ansage (Sek.)</value>
+    <value>Countdown nach Ansage (Sek.)</value>
   </data>
   <data name="DormantDelaySeconds_Desc" xml:space="preserve">
-    <value>Sekunden zwischen dem Ende der gesprochenen Ankuendigung und dem Trennen der Verbindung.</value>
-  </data>
-  <data name="DormantWarningPrompt_Display" xml:space="preserve">
-    <value>Text der Ruhemodus-Ansage</value>
-  </data>
-  <data name="DormantWarningPrompt_Desc" xml:space="preserve">
-    <value>Anweisung an die KI, wie sie den Ruhemodus ankuendigen soll. Leer lassen fuer den eingebauten Text.</value>
-  </data>
-  <data name="DormantResumePrompt_Display" xml:space="preserve">
-    <value>Text beim Fortsetzen</value>
-  </data>
-  <data name="DormantResumePrompt_Desc" xml:space="preserve">
-    <value>Anweisung an die KI, wie sie sich nach dem Aufwecken zurueckmeldet. Leer lassen fuer den eingebauten Text.</value>
-  </data>
-  <data name="DormantCancelPrompt_Display" xml:space="preserve">
-    <value>Text beim Abbrechen</value>
-  </data>
-  <data name="DormantCancelPrompt_Desc" xml:space="preserve">
-    <value>Anweisung an die KI, wie sie den abgebrochenen Ruhemodus bestaetigt, wenn der Benutzer waehrend des Countdowns tippt. Leer lassen fuer den eingebauten Text.</value>
+    <value>Sekunden zwischen dem Ende der gesprochenen Ankuendigung und dem Trennen. Der Countdown ist sichtbar und laesst sich per Tippen aufs Control abbrechen.</value>
   </data>
   <!-- AgentLanguage -->
   <data name="AgentLanguage_Display" xml:space="preserve">

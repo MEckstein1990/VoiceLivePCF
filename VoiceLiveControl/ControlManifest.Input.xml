@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest>
-  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.30.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
+  <control namespace="KoRaVoiceControl" constructor="VoiceLiveControl" version="1.31.0" display-name-key="VoiceLiveChat" description-key="VoiceLiveChat_Desc" control-type="standard">
     <external-service-usage enabled="true">
       <domain>*.services.ai.azure.com</domain>
       <domain>*.cognitiveservices.azure.com</domain>
@@ -33,10 +33,10 @@
       <value name="fr" display-name-key="Lang_FR">fr</value>
     </property>
     <property name="VoiceSpeed" display-name-key="VoiceSpeed_Display" description-key="VoiceSpeed_Desc" of-type="Enum" usage="input" required="true">
-      <value name="0.9" display-name-key="VoiceSpeed_Langsam">langsam</value>
-      <value name="1.0" display-name-key="VoiceSpeed_Mittel">mittel</value>
-      <value name="1.1" display-name-key="VoiceSpeed_Schnell">schnell</value>
-      <value name="1.3" display-name-key="VoiceSpeed_SehrSchnell">sehr schnell</value>
+      <value name="1.0" display-name-key="VoiceSpeed_Langsam">langsam</value>
+      <value name="1.1" display-name-key="VoiceSpeed_Mittel">mittel</value>
+      <value name="1.3" display-name-key="VoiceSpeed_Schnell">schnell</value>
+      <value name="1.5" display-name-key="VoiceSpeed_SehrSchnell">sehr schnell</value>
     </property>
     <property name="SilenceDurationMs" display-name-key="SilenceDurationMs_Display" description-key="SilenceDurationMs_Desc" of-type="Whole.None" usage="input" required="true" default-value="1500" />
     <property name="VadThreshold" display-name-key="VadThreshold_Display" description-key="VadThreshold_Desc" of-type="FP" usage="input" required="true" default-value="0.5" />
@@ -44,9 +44,6 @@
     <property name="DormantEnabled" display-name-key="DormantEnabled_Display" description-key="DormantEnabled_Desc" of-type="TwoOptions" usage="input" required="false" default-value="true" />
     <property name="IdleTimeoutMinutes" display-name-key="IdleTimeoutMinutes_Display" description-key="IdleTimeoutMinutes_Desc" of-type="Whole.None" usage="input" required="true" default-value="5" />
     <property name="DormantDelaySeconds" display-name-key="DormantDelaySeconds_Display" description-key="DormantDelaySeconds_Desc" of-type="Whole.None" usage="input" required="true" default-value="5" />
-    <property name="DormantWarningPrompt" display-name-key="DormantWarningPrompt_Display" description-key="DormantWarningPrompt_Desc" of-type="Multiple" usage="input" required="false" />
-    <property name="DormantResumePrompt" display-name-key="DormantResumePrompt_Display" description-key="DormantResumePrompt_Desc" of-type="Multiple" usage="input" required="false" />
-    <property name="DormantCancelPrompt" display-name-key="DormantCancelPrompt_Display" description-key="DormantCancelPrompt_Desc" of-type="Multiple" usage="input" required="false" />
 
     <property name="ConnectionStatus" display-name-key="VLC_ConnectionStatus_Display" description-key="VLC_ConnectionStatus_Desc" of-type="SingleLine.Text" usage="output" />
     <property name="Transcript" display-name-key="VLC_Transcript_Display" description-key="VLC_Transcript_Desc" of-type="Multiple" usage="output" />

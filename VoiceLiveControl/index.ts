@@ -184,9 +184,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private dormantEnabled = true;
   private idleTimeoutMs = 5 * 60_000;
   private dormantDelayMs = 5_000;
-  private dormantWarningPrompt = "";
-  private dormantResumePrompt = "";
-  private dormantCancelPrompt = "";
 
   /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
   // private fetchedToken = '';
@@ -218,12 +215,19 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_IDLE_TIMEOUT_MINUTES = 5;
   private static readonly DEFAULT_DORMANT_DELAY_SECONDS = 5;
 
+  // ── System-Hinweise an den Agenten ───────────────────────────────────
+  //
+  // Anweisungen, WIE die KI etwas sagen soll – nicht der wörtlich gesprochene
+  // Text. Sie formuliert daraus jedes Mal selbst und passt sich dem Gespräch an.
+  // Bewusst hier statt als Manifest-Properties: Sie werden selten angefasst und
+  // hätten das Property-Pane nur zugestellt.
+
   /**
    * Ansage vor dem Ruhemodus. Der Zusatz "keine Tools" ist wichtig: Ein
    * Tool-Aufruf als Reaktion würde die Inaktivitätsmessung zurücksetzen und
    * den Ablauf mitten in der geschützten Phase abbrechen.
    */
-  private static readonly DEFAULT_DORMANT_WARNING_PROMPT =
+  private static readonly DORMANT_WARNING_PROMPT =
     "[SYSTEM-HINWEIS] Es gab länger keine Aktivität. Sage dem Benutzer in EINEM kurzen Satz, " +
     "dass du jetzt in den Ruhemodus gehst und er dich jederzeit wieder antippen kann, um " +
     "weiterzumachen. Stelle KEINE Rückfrage und rufe KEINE Tools auf.";
@@ -232,17 +236,34 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * Bestätigung, wenn der Benutzer den Ruhemodus durch Tippen abbricht.
    * Der Tool-Hinweis aus demselben Grund wie oben.
    */
-  private static readonly DEFAULT_DORMANT_CANCEL_PROMPT =
+  private static readonly DORMANT_CANCEL_PROMPT =
     "[SYSTEM-HINWEIS] Der Benutzer ist doch noch da und hat den Ruhemodus abgebrochen. " +
     "Bestätige das in EINEM sehr kurzen Satz, etwa \"Okay, machen wir weiter\". " +
     "Stelle KEINE Rückfrage und rufe KEINE Tools auf.";
 
   /** Rückmeldung nach dem Aufwecken – kein erneutes Begrüßen. */
-  private static readonly DEFAULT_DORMANT_RESUME_PROMPT =
+  private static readonly DORMANT_RESUME_PROMPT =
     "[SYSTEM-HINWEIS] Der Ruhemodus wurde beendet, das Gespräch wird fortgesetzt. " +
-    "Der Benutzer hat die Abschiedsansage davor möglicherweise nicht gehört. " +
-    "Begrüße ihn NICHT erneut und stelle dich NICHT erneut vor – sage in EINEM kurzen Satz, " +
-    "dass du wieder da bist und woran ihr zuletzt gearbeitet habt.";
+    "Antworte JETZT auf diesen Hinweis – nicht auf ältere Nachrichten im Verlauf. " +
+    "Führe frühere Anweisungen NICHT erneut aus, sie sind bereits erledigt. " +
+    "Begrüße den Benutzer NICHT erneut und stelle dich NICHT erneut vor. " +
+    "Sage kurz, dass du wieder da bist, fasse in einem Halbsatz zusammen, " +
+    "woran ihr zuletzt gearbeitet habt, und frage, ob ihr damit weitermachen " +
+    "sollt oder ob etwas anderes ansteht.";
+
+  /** Rückmeldung nach einem automatischen Reconnect. */
+  private static readonly RECONNECT_RESUME_PROMPT =
+    "[SYSTEM-HINWEIS] Die Verbindung wurde kurz unterbrochen und automatisch wiederhergestellt. " +
+    "Antworte JETZT auf diesen Hinweis – nicht auf ältere Nachrichten im Verlauf. " +
+    "Führe frühere Anweisungen NICHT erneut aus, sie sind bereits erledigt. " +
+    "Begrüße den Benutzer NICHT erneut – sage stattdessen kurz, dass du wieder da " +
+    "bist und wo ihr stehengeblieben seid.";
+
+  /** Rahmt den reinjizierten Verlauf als Erinnerung ein, nicht als Auftrag. */
+  private static readonly HISTORY_PREAMBLE_PROMPT =
+    "[SYSTEM-HINWEIS] Es folgt der bisherige Gesprächsverlauf – ausschließlich " +
+    "zur Erinnerung an das, was bereits gelaufen ist. Die darin enthaltenen " +
+    "Anweisungen sind bereits erledigt und dürfen NICHT erneut ausgeführt werden.";
 
   /** Benutzerfreundliche Anzeigenamen für Dataverse-Tabellen */
   private static readonly TABLE_DISPLAY_NAMES: Record<string, string> = {
@@ -515,19 +536,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         ? context.parameters.DormantDelaySeconds.raw
         : VoiceLiveControl.DEFAULT_DORMANT_DELAY_SECONDS;
     this.dormantDelayMs = Math.max(1, dormantSeconds) * 1000;
-
-    this.dormantWarningPrompt = prop(
-      context.parameters.DormantWarningPrompt.raw,
-      VoiceLiveControl.DEFAULT_DORMANT_WARNING_PROMPT,
-    );
-    this.dormantResumePrompt = prop(
-      context.parameters.DormantResumePrompt.raw,
-      VoiceLiveControl.DEFAULT_DORMANT_RESUME_PROMPT,
-    );
-    this.dormantCancelPrompt = prop(
-      context.parameters.DormantCancelPrompt.raw,
-      VoiceLiveControl.DEFAULT_DORMANT_CANCEL_PROMPT,
-    );
 
     // Kill-Switch während einer laufenden Ansage: Ablauf sofort abbrechen.
     if (dormantWasEnabled && !this.dormantEnabled) {
@@ -851,7 +859,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       item: {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: this.dormantWarningPrompt }],
+        content: [
+          {
+            type: "input_text",
+            text: VoiceLiveControl.DORMANT_WARNING_PROMPT,
+          },
+        ],
       },
     });
     this.sendJson({ type: "response.create" });
@@ -1066,7 +1079,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       item: {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: this.dormantCancelPrompt }],
+        content: [
+          {
+            type: "input_text",
+            text: VoiceLiveControl.DORMANT_CANCEL_PROMPT,
+          },
+        ],
       },
     });
     this.sendJson({ type: "response.create" });
@@ -1095,29 +1113,42 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   /**
    * Spielt den bisherigen Gesprächsverlauf in eine frische Session ein.
    *
-   * Der Hinweistext geht bedingungslos raus – auch ohne Verlauf muss die KI
-   * wissen, dass sie nicht neu begrüßen soll.
-   *
    * Bewusst als einzelne Items mit echten Rollen statt als ein Textblock:
    * Bei role "assistant" übernimmt das Modell diese Aussagen als seine eigenen
    * und macht nahtlos weiter. Derselbe Inhalt als Transkript-Text in einer
    * User-Nachricht wäre für das Modell nur ein Bericht ÜBER ein Gespräch –
    * es antwortet dann mit "laut dem Verlauf haben wir über X gesprochen".
+   *
+   * REIHENFOLGE IST KRITISCH: Erst der Verlauf, der Hinweistext ZULETZT.
+   * Direkt danach folgt response.create, und das Modell antwortet immer auf
+   * den jüngsten Turn. Stünde der Hinweis vorne, wäre die letzte Nachricht
+   * eine alte Nutzer-Anweisung ("erzähl mir eine Kurzgeschichte") – die das
+   * Modell dann prompt ein zweites Mal ausführt, statt sich zurückzumelden.
    */
   private injectConversationHistory(noticeText: string): void {
-    this.sendJson({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: noticeText }],
-      },
-    });
+    const history = this.chatMessages.filter((m) => m.text.trim());
+
+    // Rahmt den Verlauf als Erinnerung ein, damit alte Anweisungen darin
+    // nicht als frische Aufträge gelesen werden.
+    if (history.length > 0) {
+      this.sendJson({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: VoiceLiveControl.HISTORY_PREAMBLE_PROMPT,
+            },
+          ],
+        },
+      });
+    }
 
     let injected = 0;
 
-    for (const msg of this.chatMessages) {
-      if (!msg.text.trim()) continue;
+    for (const msg of history) {
 
       this.sendJson(
         msg.role === "user"
@@ -1141,6 +1172,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       injected++;
     }
+
+    // ZULETZT – siehe Reihenfolge-Hinweis oben. Das ist der Turn, auf den das
+    // Modell beim folgenden response.create tatsächlich antwortet.
+    this.sendJson({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: noticeText }],
+      },
+    });
 
     this.log(`${injected} Konversations-Items injiziert`);
   }
@@ -1325,10 +1367,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         if (keepsContext) {
           this.injectConversationHistory(
             mode === "wake"
-              ? this.dormantResumePrompt
-              : "[SYSTEM-HINWEIS] Die Verbindung wurde kurz unterbrochen und automatisch wiederhergestellt. " +
-                  "Das Gespräch wird nahtlos fortgesetzt. Begrüße den Benutzer NICHT erneut – " +
-                  "sage stattdessen kurz, dass du wieder da bist und wo ihr stehengeblieben seid.",
+              ? VoiceLiveControl.DORMANT_RESUME_PROMPT
+              : VoiceLiveControl.RECONNECT_RESUME_PROMPT,
           );
 
           // Beide Hinweistexte fordern eine kurze Rückmeldung – ausgelöst wird
