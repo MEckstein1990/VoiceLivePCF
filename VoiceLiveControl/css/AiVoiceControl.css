@@ -405,13 +405,14 @@
 
 .ai-voice-footer {
     width: 100%;
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    /* 2 gleich breite Spalten -> Button-Mitte landet exakt bei 25% und 75% */
+    grid-template-columns: 1fr 1fr;
     align-items: center;
     flex-shrink: 0;
     margin-top: auto;
-    /* padding-bottom hebt die Buttons ein Stück vom unteren Rand ab */
-    padding: 8px calc(33.33% - 68px) 32px;
+    /* padding regelt jetzt NUR noch Abstände zum Rand, keine Layout-Verschiebungen mehr! */
+    padding: 8px 12px 32px; 
     min-height: 132px;
     position: relative;
     z-index: 10;
@@ -453,6 +454,8 @@
 
 /* ── MUTE BUTTON LOGIK ────────────────────────────────────────────────── */
 .ai-voice-mute-btn {
+    grid-column: 1;         /* Spalte 1 = linke Hälfte -> Mitte bei 25% */
+    justify-self: center;
     opacity: 1;
     pointer-events: auto;
     transition: opacity 0.3s, transform 0.3s;
@@ -504,6 +507,11 @@
 }
 
 /* ── CONNECT BUTTON LOGIK (2 Zustände: Wellen oder X) ───────────────── */
+
+.ai-voice-connect-btn {
+    grid-column: 2;         /* Spalte 2 = rechte Hälfte -> Mitte bei 75% */
+    justify-self: center;
+}
 
 /* Zustand 1: AUS / Nicht verbunden (Standard) */
 .ai-voice-connect-btn .icon-waves { display: block; }
