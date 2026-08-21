@@ -27,24 +27,27 @@ Screens:
             Width: =49
             X: =15
             Y: =940
-      # - VoiceLiveControl1:
-      #     Control: CodeComponent
-      #     ComponentName: adesso_KoRaVoiceControl.VoiceLiveControl
-      #     Properties:
-      #       AgentEndpoint: ="https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com"
-      #       AgentId: ="dataverse-proxy-agent"
-      #       AgentLanguage: ='KoRaVoiceControl.VoiceLiveControl.AgentLanguage'.de
-      #       AgentProjectName: ="proj-default"
-      #       AgentVoice: ='KoRaVoiceControl.VoiceLiveControl.AgentVoice'.'de-DE-Seraphina:DragonHDLatestNeural'
-      #       Connected: =var_connect
-      #       DataverseOrgUrl: ="https://enbwkommbezkora.crm4.dynamics.com"
-      #       Height: =1136
-      #       MsalClientId: ="e850e91d-15e6-4055-9aff-c272ad66e1aa"
-      #       ProxyKey: ="qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057"
-      #       TenantId: ="ee920d54-46e4-4e1e-aa99-6d010a689325"
-      #       TokenEndpoint: ="https://func-voicelive-kora.azurewebsites.net"
-      #       UserId: =SystemUserID
-      #       Width: =640
+      - VoiceLiveControl1:
+          Control: CodeComponent
+          ComponentName: adesso_KoRaVoiceControl.VoiceLiveControl
+          Properties:
+            AgentEndpoint: ="https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com"
+            AgentId: ="dataverse-proxy-agent"
+            AgentLanguage: ='KoRaVoiceControl.VoiceLiveControl.AgentLanguage'.de
+            AgentProjectName: ="proj-default"
+            AgentVoice: ='KoRaVoiceControl.VoiceLiveControl.AgentVoice'.'de-DE-Seraphina:DragonHDLatestNeural'
+            Connected: =var_connect
+            DataverseOrgUrl: ="https://enbwkommbezkora.crm4.dynamics.com"
+            DormantDelaySeconds: =10
+            Height: =1136
+            MsalClientId: ="e850e91d-15e6-4055-9aff-c272ad66e1aa"
+            ProxyKey: ="qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057"
+            TenantId: ="ee920d54-46e4-4e1e-aa99-6d010a689325"
+            TokenEndpoint: ="https://func-voicelive-kora.azurewebsites.net"
+            UserId: =SystemUserID
+            UserName: =User().FullName
+            VoiceSpeed: ='KoRaVoiceControl.VoiceLiveControl.VoiceSpeed'.'1.3'
+            Width: =640
       - Label1:
           Control: Label@2.5.1
           Properties:
@@ -53,6 +56,6 @@ Screens:
             Font: =Font.'Open Sans'
             Height: =21
             Size: =10
-            Text: ="V1.2 " & Var_Video & " " & SystemUserID
+            Text: ="V1.10 " //& Var_Video & " " & SystemUserID
             Width: =640
             Y: =1115
