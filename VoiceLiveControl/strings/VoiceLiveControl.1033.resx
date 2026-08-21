@@ -145,6 +145,25 @@
   <data name="VadThreshold_Desc" xml:space="preserve">
     <value>Wert zwischen 0.1 und 1.0. Hoeherer Wert macht die Erkennung unempfindlicher gegen Nebengeraeusche.</value>
   </data>
+  <!-- Ruhemodus -->
+  <data name="DormantEnabled_Display" xml:space="preserve">
+    <value>Automatischen Ruhemodus verwenden</value>
+  </data>
+  <data name="DormantEnabled_Desc" xml:space="preserve">
+    <value>Schaltet die Ruhemodus-Funktion insgesamt ein oder aus. Eingeschaltet trennt das Control Verbindung und Mikrofon nach laengerer Inaktivitaet automatisch, damit keine ungewollten Gespraeche aufgezeichnet werden. Ausgeschaltet bleibt die Sitzung unbegrenzt offen.</value>
+  </data>
+  <data name="IdleTimeoutMinutes_Display" xml:space="preserve">
+    <value>Inaktivitaet bis Ruhemodus (Min.)</value>
+  </data>
+  <data name="IdleTimeoutMinutes_Desc" xml:space="preserve">
+    <value>Minuten ohne Datenzugriff der KI, bis der Ruhemodus angekuendigt wird. Reines Sprechen zaehlt bewusst nicht als Aktivitaet, sonst wuerden fremde Gespraeche im Raum die Sitzung offen halten.</value>
+  </data>
+  <data name="DormantDelaySeconds_Display" xml:space="preserve">
+    <value>Countdown nach Ansage (Sek.)</value>
+  </data>
+  <data name="DormantDelaySeconds_Desc" xml:space="preserve">
+    <value>Sekunden zwischen dem Ende der gesprochenen Ankuendigung und dem Trennen. Der Countdown ist sichtbar und laesst sich per Tippen aufs Control abbrechen.</value>
+  </data>
   <!-- AgentLanguage -->
   <data name="AgentLanguage_Display" xml:space="preserve">
     <value>Sprache</value>
@@ -164,7 +183,7 @@
     <value>Verbindungsstatus</value>
   </data>
   <data name="VLC_ConnectionStatus_Desc" xml:space="preserve">
-    <value>Aktueller Zustand: idle, connecting, listening, user-speaking, ai-speaking oder error.</value>
+    <value>Aktueller Zustand: idle, connecting, listening, user-speaking, ai-speaking, dormant (Ruhemodus) oder error.</value>
   </data>
   <!-- Transcript -->
   <data name="VLC_Transcript_Display" xml:space="preserve">
