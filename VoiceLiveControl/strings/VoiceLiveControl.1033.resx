@@ -145,6 +145,43 @@
   <data name="VadThreshold_Desc" xml:space="preserve">
     <value>Wert zwischen 0.1 und 1.0. Hoeherer Wert macht die Erkennung unempfindlicher gegen Nebengeraeusche.</value>
   </data>
+  <!-- Ruhemodus -->
+  <data name="DormantEnabled_Display" xml:space="preserve">
+    <value>Ruhemodus aktiv</value>
+  </data>
+  <data name="DormantEnabled_Desc" xml:space="preserve">
+    <value>Trennt die Verbindung nach laengerer Inaktivitaet automatisch, damit keine ungewollten Gespraeche aufgezeichnet werden.</value>
+  </data>
+  <data name="IdleTimeoutMinutes_Display" xml:space="preserve">
+    <value>Ruhemodus nach (Minuten)</value>
+  </data>
+  <data name="IdleTimeoutMinutes_Desc" xml:space="preserve">
+    <value>Minuten ohne Datenzugriff der KI, bis der Ruhemodus angekuendigt wird. Reines Sprechen zaehlt bewusst nicht als Aktivitaet.</value>
+  </data>
+  <data name="DormantDelaySeconds_Display" xml:space="preserve">
+    <value>Wartezeit nach Ansage (Sek.)</value>
+  </data>
+  <data name="DormantDelaySeconds_Desc" xml:space="preserve">
+    <value>Sekunden zwischen dem Ende der gesprochenen Ankuendigung und dem Trennen der Verbindung.</value>
+  </data>
+  <data name="DormantWarningPrompt_Display" xml:space="preserve">
+    <value>Text der Ruhemodus-Ansage</value>
+  </data>
+  <data name="DormantWarningPrompt_Desc" xml:space="preserve">
+    <value>Anweisung an die KI, wie sie den Ruhemodus ankuendigen soll. Leer lassen fuer den eingebauten Text.</value>
+  </data>
+  <data name="DormantResumePrompt_Display" xml:space="preserve">
+    <value>Text beim Fortsetzen</value>
+  </data>
+  <data name="DormantResumePrompt_Desc" xml:space="preserve">
+    <value>Anweisung an die KI, wie sie sich nach dem Aufwecken zurueckmeldet. Leer lassen fuer den eingebauten Text.</value>
+  </data>
+  <data name="DormantCancelPrompt_Display" xml:space="preserve">
+    <value>Text beim Abbrechen</value>
+  </data>
+  <data name="DormantCancelPrompt_Desc" xml:space="preserve">
+    <value>Anweisung an die KI, wie sie den abgebrochenen Ruhemodus bestaetigt, wenn der Benutzer waehrend des Countdowns tippt. Leer lassen fuer den eingebauten Text.</value>
+  </data>
   <!-- AgentLanguage -->
   <data name="AgentLanguage_Display" xml:space="preserve">
     <value>Sprache</value>
@@ -164,7 +201,7 @@
     <value>Verbindungsstatus</value>
   </data>
   <data name="VLC_ConnectionStatus_Desc" xml:space="preserve">
-    <value>Aktueller Zustand: idle, connecting, listening, user-speaking, ai-speaking oder error.</value>
+    <value>Aktueller Zustand: idle, connecting, listening, user-speaking, ai-speaking, dormant (Ruhemodus) oder error.</value>
   </data>
   <!-- Transcript -->
   <data name="VLC_Transcript_Display" xml:space="preserve">

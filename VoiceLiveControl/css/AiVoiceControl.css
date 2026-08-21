@@ -90,6 +90,11 @@
     background: #ff4444;
 }
 
+/* Ruhemodus: statisches Bernstein – klar unterscheidbar von idle (grau) */
+.state-dormant .ai-voice-status-dot {
+    background: #d9a441;
+}
+
 /* Stopp-Button – standardmäßig versteckt (display: none) */
 .ai-voice-stop-btn {
     background: transparent;                      /* durchsichtiger Hintergrund */
@@ -271,6 +276,28 @@
     animation: breathe-soft 3s ease-in-out infinite; /* sanfteres Atmen als im Idle (nur 4% statt 6%) */
 }
 
+/* ── Ruhemodus: gedimmtes Bernstein, sehr langsames Atmen ─────────────────
+   Verbindung getrennt und Mikrofon aus, aber der Gesprächsverlauf lebt noch.
+   Deutlich ruhiger als listening – signalisiert "schläft, ist aber da". */
+.state-dormant .ai-voice-orb {
+    box-shadow:
+        0 0 20px rgba(217, 164, 65, 0.12),
+        inset 0 0 40px rgba(0, 0, 0, 0.65);
+    background: radial-gradient(circle at 35% 35%, #2a2418, #14100a);
+    animation: breathe-dormant 6s ease-in-out infinite;
+}
+
+.state-dormant .ai-voice-orb-icon {
+    color: #d9a441;
+    opacity: 0.45;
+}
+
+/* Keine Wellenringe im Ruhemodus */
+.state-dormant .ai-voice-ring {
+    animation: none;
+    border-color: transparent;
+}
+
 /* ── AI thinking: gedämpftes Lila, langsames Pulsieren ────────────────────
    Die KI verarbeitet (MCP-Calls, Tool-Nutzung, Thinking). Dezenter als
    ai-speaking – signalisiert Aktivität ohne Audio-Erwartung. */
@@ -398,6 +425,26 @@
 .state-ai-thinking .ai-voice-status-text   { color: #a78bdb; }  /* Gedämpftes Lila */
 .state-connecting .ai-voice-status-text    { color: #f59e0b; }  /* Orange */
 .state-error .ai-voice-status-text         { color: #ff6b6b; }  /* Rot */
+.state-dormant .ai-voice-status-text       { color: #d9a441; }  /* Bernstein */
+
+/* ── Tipp-Hinweis während des Ruhemodus-Countdowns ────────────────────────
+   Standardmäßig ausgeblendet; nur die Container-Klasse .dormant-pending
+   blendet ihn ein. Dadurch braucht es kein DOM-Handling im TypeScript. */
+.ai-voice-dormant-hint {
+    display: none;
+    font-size: 15px;
+    font-weight: 400;
+    color: #d9a441;
+    opacity: 0.75;
+    margin: 4px 0 0;
+    text-align: center;
+    letter-spacing: 0.2px;
+    animation: fade-in 0.3s ease;
+}
+
+.dormant-pending .ai-voice-dormant-hint {
+    display: block;
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
    FOOTER – Fixiertes Layout & Button-Zustände
@@ -475,8 +522,10 @@
 }
 
 /* ── MUTED-Zustand: Orb-Animationen + Ringe unterdrücken ─────────────── */
-/* Wenn gemuted UND nicht KI-sprechend → statischer blauer Orb ohne Animation */
-.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-orb {
+/* Wenn gemuted UND nicht KI-sprechend → statischer blauer Orb ohne Animation.
+   Der Ruhemodus ist ausgenommen: isMuted überlebt das Einschlafen, ohne
+   :not() würde der Muted-Orb den Ruhemodus-Look überschreiben (!important). */
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking):not(.state-dormant) .ai-voice-orb {
     animation: none !important;
     box-shadow:
         0 0 25px rgba(74, 158, 255, 0.15),
@@ -485,13 +534,13 @@
     transform: scale(1) !important;
 }
 
-.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-orb-icon {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking):not(.state-dormant) .ai-voice-orb-icon {
     color: #5a90d4;
     opacity: 0.6;
 }
 
 /* Alle Wellenringe bei Mute stoppen (außer KI spricht) */
-.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-ring {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking):not(.state-dormant) .ai-voice-ring {
     animation: none !important;
     border-color: transparent !important;
 }
@@ -502,7 +551,7 @@
 }
 
 /* Status-Text bei Mute */
-.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking) .ai-voice-status-text {
+.ai-voice-container.muted:not(.state-ai-speaking):not(.state-ai-thinking):not(.state-dormant) .ai-voice-status-text {
     color: #8a8a99;
 }
 
@@ -533,6 +582,19 @@
     border-color: rgba(255, 68, 68, 0.5);
 }
 
+/* Zustand 4: Ruhemodus – Wellen-Icon in Bernstein, lädt zum Fortsetzen ein */
+.state-dormant .ai-voice-connect-btn {
+    color: #d9a441;
+    border-color: rgba(217, 164, 65, 0.35);
+    background: rgba(217, 164, 65, 0.1);
+}
+
+.state-dormant .ai-voice-connect-btn:hover:not(:disabled) {
+    color: #f0b955;
+    border-color: rgba(217, 164, 65, 0.6);
+    background: rgba(217, 164, 65, 0.18);
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    KEYFRAME-ANIMATIONEN
    
@@ -554,6 +616,12 @@
 @keyframes breathe-soft {
     0%, 100% { transform: scale(1.0); }
     50%       { transform: scale(1.04); }
+}
+
+/* Ruhemodus: kaum wahrnehmbares, sehr langsames Atmen (2%) */
+@keyframes breathe-dormant {
+    0%, 100% { transform: scale(1.0); }
+    50%       { transform: scale(1.02); }
 }
 
 /* Puls-Animation für KI-Sprechen: etwas stärker als breathe-soft (7%) */
