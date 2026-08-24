@@ -162,6 +162,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   // ── Chat-UI ──────────────────────────────────────────────────────────
   private chatMessages: ChatMessage[] = [];
   private chatOpen = false;
+  /** Folgt der Chat dem Verlauf? Pausiert, sobald der Nutzer hochscrollt. */
+  private chatAutoScroll = true;
+  /** Trennt eigene Scroll-Aufrufe von echten Nutzergesten. */
+  private isProgrammaticScroll = false;
+
+  /**
+   * Abstand zum Ende, ab dem der Nutzer noch als "liest mit" gilt.
+   *
+   * Misst bewusst NICHT das Wachstum des Inhalts – genau daran ist die
+   * frühere Heuristik gescheitert, als die Bubbles größer wurden als ihr
+   * Schwellwert. Hier geht es nur um die Ruheposition des Nutzers, der Wert
+   * ist damit unabhängig von Schriftgröße und Bubble-Höhe.
+   */
+  private static readonly CHAT_BOTTOM_THRESHOLD_PX = 48;
   // ── Event-Log (Debug) ────────────────────────────────────────────────
   private eventLogEntries: string[] = [];
   // private eventLogOpen = true;
@@ -442,6 +456,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // const eventLogClearBtn = this.container.querySelector('.ai-event-log-clear') as HTMLButtonElement;
 
     this.chatToggleBtn.addEventListener("click", () => this.toggleChat());
+
+    // Das Panel ist der einzige Scroll-Container (.ai-chat-messages scrollt
+    // nicht). Ein scroll-Listener deckt Maus, Touch und Tastatur gleichermaßen ab.
+    this.chatPanel.addEventListener("scroll", () => this.onChatScroll());
 
     // this.eventLogToggleBtn.addEventListener('click', () => {
     //     this.eventLogOpen = !this.eventLogOpen;
@@ -2110,7 +2128,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.chatOpen = !this.chatOpen;
     this.container.classList.toggle("chat-open", this.chatOpen);
 
-    if (this.chatOpen) this.scrollToBottom();
+    if (this.chatOpen) {
+      // Beim Öffnen immer ans Ende, auch wenn zuvor hochgescrollt war.
+      this.chatAutoScroll = true;
+
+      // Erst im nächsten Frame: Das Panel wechselt gerade von display:none auf
+      // flex, und der Orb-Bereich schrumpft per Transition – im selben Tick
+      // stünde noch die alte Geometrie zur Verfügung.
+      requestAnimationFrame(() => this.scrollToBottom(true));
+    }
   }
 
   private addChatBubble(role: "user" | "ai", text: string): void {
@@ -2168,22 +2194,48 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.scrollToBottom();
   }
 
-  private scrollToBottom(): void {
+  /**
+   * Scrollt den Chat ans Ende, solange der Nutzer mitliest.
+   *
+   * @param force Auch scrollen, wenn der Nutzer hochgescrollt hat
+   *              (beim Öffnen des Chats gewollt).
+   */
+  private scrollToBottom(force = false): void {
+    const el = this.chatPanel;
+
+    if (!el) return;
+    if (!force && !this.chatAutoScroll) return;
+
+    // Eine Zuweisung an scrollTop feuert selbst ein scroll-Event. Ohne diese
+    // Markierung würde onChatScroll() den eigenen Scroll für eine Nutzergeste
+    // halten und das Mitscrollen sofort wieder abschalten.
+    this.isProgrammaticScroll = true;
+    el.scrollTop = el.scrollHeight;
+
+    requestAnimationFrame(() => {
+      this.isProgrammaticScroll = false;
+    });
+  }
+
+  /** Merkt sich, ob der Nutzer weggescrollt hat oder wieder mitliest. */
+  private onChatScroll(): void {
+    if (this.isProgrammaticScroll) return;
+
     const el = this.chatPanel;
 
     if (!el) return;
 
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 
-    if (isNearBottom) {
-      el.scrollTop = el.scrollHeight;
-    }
+    this.chatAutoScroll =
+      distanceFromBottom <= VoiceLiveControl.CHAT_BOTTOM_THRESHOLD_PX;
   }
 
   private clearChat(): void {
     this.chatMessages = [];
     this.lastAiBubbleEl = null;
     this.lastUserBubbleEl = null;
+    this.chatAutoScroll = true;
 
     if (this.chatMessagesEl) {
       this.chatMessagesEl.innerHTML =
