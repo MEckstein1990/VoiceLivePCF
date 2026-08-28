@@ -289,6 +289,22 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     task: "Aufgaben",
     appointment: "Termine",
   };
+  /** Worklet-Code als Vanilla JS (kein TS!) – wird als Blob geladen, das löst die PCF-Pfad-Probleme. */
+  private static readonly WORKLET_CODE = `
+    class Processor extends AudioWorkletProcessor {
+      process(inputs, outputs, parameters) {
+        const inputChannel = inputs[0]?.[0];
+        if (inputChannel) {
+          // WICHTIG: Float32Array kopieren, bevor es an den Main-Thread geht!
+          // Der Browser leert den Puffer sonst sofort wieder.
+          const bufferCopy = new Float32Array(inputChannel);
+          this.port.postMessage(bufferCopy);
+        }
+        return true;
+      }
+    }
+    registerProcessor("processor", Processor);
+  `;
 
   // ── DOM-Referenzen ───────────────────────────────────────────────────
   private orbEl!: HTMLDivElement;
@@ -1827,13 +1843,48 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
-  private getAudioContext(): AudioContext {
-    const Ctx =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
+  /**
+   * Liefert den AudioContext und legt ihn beim ersten Aufruf an.
+   *
+   * Der Context überlebt bewusst einzelne Verbindungen: Android entscheidet beim
+   * Öffnen des Ausgabepfads einmalig, ob die Wiedergabe auf dem Musik- oder dem
+   * Anruf-Stream landet. Würde er pro Sitzung neu erzeugt, fiele diese
+   * Entscheidung jedes Mal neu – mit wechselnder Lautstärke als Folge.
+   *
+   * Die Worklet-Registrierung liegt im Erstell-Zweig, weil registerProcessor
+   * beim zweiten Aufruf wirft. So kann das strukturell nicht passieren.
+   */
+  private async ensureAudioContext(): Promise<AudioContext> {
+    if (!this.audioContext) {
+      const Ctx =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
 
-    return new Ctx();
+      this.audioContext = new Ctx();
+
+      const blob = new Blob([VoiceLiveControl.WORKLET_CODE], {
+        type: "application/javascript",
+      });
+      const workletUrl = URL.createObjectURL(blob);
+
+      try {
+        await this.audioContext.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+
+      this.log("AudioContext angelegt, Worklet registriert");
+    }
+
+    // Bewusst ohne Zustandsprüfung: cleanupConnection() suspendiert ohne zu
+    // warten. Verbindet man schnell wieder, steht state noch auf "running",
+    // während suspend() gerade läuft – eine Prüfung würde das resume
+    // überspringen und der Context bliebe stumm zurück. Auf einem laufenden
+    // Context ist resume() ein No-op.
+    await this.audioContext.resume();
+
+    return this.audioContext;
   }
 
   private resample(input: Float32Array, fromRate: number): Float32Array {
@@ -1870,51 +1921,22 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         video: false,
       });
 
-      this.audioContext = this.getAudioContext();
-      const nativeRate = this.audioContext.sampleRate;
+      const ctx = await this.ensureAudioContext();
+      const nativeRate = ctx.sampleRate;
 
-      if (this.audioContext.state === "suspended") {
-        await this.audioContext.resume();
-      }
+      // Die Uhr des Contexts läuft über Verbindungspausen weiter – Zeitlinie zurücksetzen.
+      this.nextPlayTime = ctx.currentTime;
 
-      this.nextPlayTime = this.audioContext.currentTime;
+      const source = ctx.createMediaStreamSource(this.mediaStream);
 
-      const source = this.audioContext.createMediaStreamSource(
-        this.mediaStream,
-      );
-
-      this.analyser = this.audioContext.createAnalyser();
+      this.analyser = ctx.createAnalyser();
       this.analyser.fftSize = 256;
       source.connect(this.analyser);
 
-      // 1. Worklet-Code als Vanilla JavaScript String definieren (kein TS!)
-      // Wir senden hier die Audiodaten per postMessage an den Main-Thread.
-      const workletCode = `
-        class Processor extends AudioWorkletProcessor {
-          process(inputs, outputs, parameters) {
-            const inputChannel = inputs[0]?.[0];
-            if (inputChannel) {
-              // WICHTIG: Float32Array kopieren, bevor es an den Main-Thread geht!
-              // Der Browser leert den Puffer sonst sofort wieder.
-              const bufferCopy = new Float32Array(inputChannel);
-              this.port.postMessage(bufferCopy);
-            }
-            return true;
-          }
-        }
-        registerProcessor("processor", Processor);
-      `;
-
-      // 2. String in eine Blob-URL umwandeln (Löst alle PCF-Pfad-Probleme)
-      const blob = new Blob([workletCode], { type: "application/javascript" });
-      const workletUrl = URL.createObjectURL(blob);
-
-      // 3. Modul über die sichere Blob-URL laden
-      await this.audioContext.audioWorklet.addModule(workletUrl);
-      this.audioWorklet = new AudioWorkletNode(this.audioContext, "processor");
+      this.audioWorklet = new AudioWorkletNode(ctx, "processor");
       source.connect(this.audioWorklet);
 
-      // 4. Daten vom Worklet empfangen und an WebSocket senden
+      // Daten vom Worklet empfangen und an WebSocket senden
       this.audioWorklet.port.onmessage = (e: MessageEvent) => {
         // isProtectedResponse hält die Ruhemodus-Ansage unterbrechungsfest:
         // Ohne Upstream-Audio erkennt das server-seitige VAD keine Sprache,
@@ -2083,9 +2105,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   // ══════════════════════════════════════════════════════════════════════
-
   //  EVENT-LOG
-
   // ══════════════════════════════════════════════════════════════════════
 
   private log(msg: string): void {
@@ -2119,9 +2139,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   // ══════════════════════════════════════════════════════════════════════
-
   //  CHAT-PANEL – WhatsApp-Style Transkript-Anzeige
-
   // ══════════════════════════════════════════════════════════════════════
 
   private toggleChat(): void {
@@ -2363,8 +2381,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
 
     if (this.audioContext) {
-      void this.audioContext.close();
-      this.audioContext = null;
+      void this.audioContext.suspend();
     }
 
     if (this.orbEl) this.orbEl.style.transform = "";
@@ -2414,5 +2431,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   public destroy(): void {
     this.cleanup();
+
+    // Der AudioContext überlebt bewusst einzelne Verbindungen (siehe
+    // ensureAudioContext) – cleanupConnection() suspendiert ihn nur. Beim
+    // Zerstören des Controls muss er aber wirklich geschlossen werden, sonst
+    // stapeln sich in einer Canvas App bei jedem Screen-Wechsel neue Contexts,
+    // bis der Browser keinen weiteren mehr zulässt.
+    //
+    // Bewusst hier und NICHT in cleanup(): Das ruft auch stopSession() auf,
+    // dort würde ein close() die Wiederverwendung wieder zunichtemachen.
+    if (this.audioContext) {
+      void this.audioContext.close();
+      this.audioContext = null;
+    }
   }
 }
