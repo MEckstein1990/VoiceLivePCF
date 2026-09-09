@@ -21,10 +21,26 @@
  *   Sprechpausen (VAD) und mehr können direkt in Power Apps konfiguriert werden.
  * - **Transkript-Anzeige:** Ein optionales Chat-Panel zeigt das Gesprächs-
  *   transkript im WhatsApp-Stil an.
+ *
+ * Architektur (Kurzüberblick für den Einstieg):
+ * - **Audio-Eingang:** Mikrofon → AudioWorklet (2 Eingänge: Mic + Echo-Referenz)
+ *   → Resampling auf 24 kHz → PCM16 → Base64 → `input_audio_buffer.append`.
+ * - **Audio-Ausgang:** `response.audio.delta` → PCM16 dekodieren → auf einer
+ *   Zeitleiste (`nextPlayTime`) über `playbackBus` einplanen. Der Bus speist
+ *   sowohl die Lautsprecher als auch Eingang 1 des Worklets (Echo-Referenz).
+ * - **Session-Start-Modi:** `new` (frischer Start), `reconnect` (nach
+ *   Verbindungsabbruch) und `wake` (nach Ruhemodus) behalten oder verwerfen
+ *   den Gesprächsverlauf – siehe `SessionStartMode` und `startSession()`.
+ * - **Vierstufiger Abbau:** `cleanupConnection()` (WS + Audio-Graph, Chat
+ *   bleibt) → `cleanup()` (+ Reconnect-Timer) → `stopSession()` (+ Ruhemodus-
+ *   Reset, State → idle) → `destroy()` (+ AudioContext endgültig schließen).
+ * - **Bekanntes Problem (Android):** Lautstärketasten wirken nach der ersten
+ *   Verbindung nicht mehr zuverlässig – Ursache, Lösungswege und Status stehen
+ *   in `../docs/lautstaerke-routing-android.md`. Siehe auch das Flag
+ *   `USE_LIVE_REFERENCE_AEC` weiter unten.
  */
 
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
-// import * as msal from "@azure/msal-browser"; // MSAL deaktiviert – caller-id wird über PCF userId übergeben
 
 /**
  * Zustandsmodell des Controls – steuert UI-Darstellung und erlaubte Aktionen.
@@ -80,6 +96,10 @@ interface ServerEvent {
   };
   /** Finale Tool-Argumente als JSON-String (bei response.mcp_call_arguments.done). */
   arguments?: string;
+  /** Bestätigte Session-Konfiguration (bei session.updated). */
+  session?: {
+    input_audio_echo_cancellation?: { reference_source?: string };
+  };
 }
 
 /** Einzelne Chat-Nachricht für die visuelle Darstellung im Chat-Panel. */
@@ -100,7 +120,19 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private audioWorklet: AudioWorkletNode | null = null;
+  /**
+   * Quellknoten des Mikrofons. Muss als Feld geführt werden, weil nur er selbst
+   * seine ausgehenden Kanten lösen kann – der AudioContext überlebt einzelne
+   * Verbindungen und würde die Knoten sonst über die Sitzung hinaus behalten.
+   */
+  private micSource: MediaStreamAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
+  /**
+   * Sammelpunkt der Wiedergabe. Alle Antwort-Chunks laufen hierüber, weil der
+   * Bus zwei Abnehmer hat: die Lautsprecher und – als Echo-Referenz für die
+   * serverseitige Entzerrung – Eingang 1 des Mikrofon-Worklets.
+   */
+  private playbackBus: GainNode | null = null;
   private animationFrameId: number | null = null;
   private nextPlayTime = 0;
   private controlState: ControlState = "idle";
@@ -177,10 +209,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    */
   private static readonly CHAT_BOTTOM_THRESHOLD_PX = 48;
   // ── Event-Log (Debug) ────────────────────────────────────────────────
+  // UI-Panel dafür ist im Markup auskommentiert (siehe renderUI) – eventLogEl
+  // bleibt entsprechend ungesetzt, der DOM-Zweig in log() bleibt inaktiv.
   private eventLogEntries: string[] = [];
-  // private eventLogOpen = true;
   private eventLogEl!: HTMLDivElement;
-  // private eventLogToggleBtn!: HTMLButtonElement;
   private loggedInit = false;
 
   // ── Konfiguration (aus Power Apps Properties) ────────────────────────
@@ -199,16 +231,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private idleTimeoutMs = 5 * 60_000;
   private dormantDelayMs = 5_000;
 
-  /** Dynamisch vom Backend geholter Token – wird nach Session-Ende verworfen. */
-  // private fetchedToken = '';
-
-  // ── MSAL / Dataverse User-Token (deaktiviert) ─────────────────────────
+  // ── MSAL / Dataverse User-Token (ungenutzt) ───────────────────────────
+  // Werden aus den PCF-Properties gelesen, aber nicht mehr verwendet – die
+  // Caller-Identität kommt heute über die PCF-Property "UserId" (callerId).
   private msalClientId = "";
   private tenantId = "";
   private dataverseOrgUrl = "";
   private callerId = "";
-  // private msalInstance: msal.PublicClientApplication | null = null;
-  // private dataverseUserToken = "";
 
   // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
   private static readonly DEFAULT_AGENT_ENDPOINT =
@@ -289,16 +318,54 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     task: "Aufgaben",
     appointment: "Termine",
   };
-  /** Worklet-Code als Vanilla JS (kein TS!) – wird als Blob geladen, das löst die PCF-Pfad-Probleme. */
+  /**
+   * Schaltet Live-Reference AEC ein: Der Client sendet zusätzlich zum Mikrofon
+   * das tatsächlich abgespielte Signal als zweiten Kanal, damit der Server das
+   * Echo sauber herausrechnen kann.
+   *
+   * Steht auf false, weil der WebSocket-Proxy dafür **api-version 2026-07-15
+   * oder neuer** braucht. Mit einer älteren Version quittiert der Server die
+   * Konfiguration stillschweigend nicht – und da wir trotzdem Stereo senden
+   * würden, läse er es als Mono und verstünde gar nichts mehr.
+   *
+   * Solange aus: Die Echounterdrückung macht das Gerät (echoCancellation im
+   * getUserMedia). Preis ist der Kommunikationsmodus auf Android, wodurch die
+   * Lautstärketasten auf den Anruf-Stream zeigen, die Wiedergabe aber auf
+   * Musik landet – die Tasten greifen dann ab der zweiten Verbindung nicht.
+   *
+   * Umlegen, sobald der Proxy aktualisiert ist. Ob es greift, meldet der
+   * session.updated-Handler im Log.
+   */
+  private static readonly USE_LIVE_REFERENCE_AEC = false;
+
+  /**
+   * Worklet-Code als Vanilla JS (kein TS!) – wird als Blob geladen, das löst
+   * die PCF-Pfad-Probleme.
+   *
+   * Zwei Eingänge: 0 ist das Mikrofon, 1 die Echo-Referenz (das, was gerade
+   * über die Lautsprecher läuft). Beide werden im selben Render-Quantum
+   * abgegriffen und sind dadurch sample-genau zueinander ausgerichtet – das
+   * ist die Voraussetzung für die serverseitige Echounterdrückung.
+   */
   private static readonly WORKLET_CODE = `
     class Processor extends AudioWorkletProcessor {
       process(inputs, outputs, parameters) {
-        const inputChannel = inputs[0]?.[0];
-        if (inputChannel) {
-          // WICHTIG: Float32Array kopieren, bevor es an den Main-Thread geht!
-          // Der Browser leert den Puffer sonst sofort wieder.
-          const bufferCopy = new Float32Array(inputChannel);
-          this.port.postMessage(bufferCopy);
+        const mic = inputs[0]?.[0];
+        if (mic) {
+          const reference = inputs[1]?.[0];
+
+          // WICHTIG: Float32Arrays kopieren, bevor sie an den Main-Thread
+          // gehen! Der Browser leert die Puffer sonst sofort wieder.
+          //
+          // Spielt gerade nichts, liefert der Browser keinen zweiten Eingang.
+          // Dann Stille gleicher Länge senden – der Referenzkanal darf nie
+          // fehlen, sonst verrutscht die Zuordnung der Sample-Paare.
+          this.port.postMessage({
+            mic: new Float32Array(mic),
+            reference: reference
+              ? new Float32Array(reference)
+              : new Float32Array(mic.length),
+          });
         }
         return true;
       }
@@ -465,27 +532,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       ".ai-voice-connect-btn",
     ) as HTMLButtonElement;
 
-    // this.eventLogEl = this.container.querySelector('.ai-event-log-body') as HTMLDivElement;
-
-    // this.eventLogToggleBtn = this.container.querySelector('.ai-event-log-toggle') as HTMLButtonElement;
-
-    // const eventLogClearBtn = this.container.querySelector('.ai-event-log-clear') as HTMLButtonElement;
-
     this.chatToggleBtn.addEventListener("click", () => this.toggleChat());
 
     // Das Panel ist der einzige Scroll-Container (.ai-chat-messages scrollt
     // nicht). Ein scroll-Listener deckt Maus, Touch und Tastatur gleichermaßen ab.
     this.chatPanel.addEventListener("scroll", () => this.onChatScroll());
-
-    // this.eventLogToggleBtn.addEventListener('click', () => {
-    //     this.eventLogOpen = !this.eventLogOpen;
-    //     this.eventLogEl.style.display = this.eventLogOpen ? 'block' : 'none';
-    //     this.eventLogToggleBtn.textContent = this.eventLogOpen ? '\u25BC' : '\u25B6';
-    // });
-    // eventLogClearBtn.addEventListener('click', () => {
-    //     this.eventLogEntries = [];
-    //     this.eventLogEl.innerHTML = '';
-    // });
 
     this.muteBtn.addEventListener("click", () => this.toggleMute());
     this.connectBtn.addEventListener("click", () => this.toggleConnection());
@@ -1222,46 +1273,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   /**
-     * Startet eine neue Voice Live Session:
-     *   1. Baut WebSocket-Verbindung zur Voice Live API auf
-     *   2. Konfiguriert die Session (Semantic VAD, Noise Suppression, Echo Cancellation, Azure STT)
-     *   3. Startet das Mikrofon
-     *
-     * Die URL wird aus dem Endpoint zusammengebaut:
-     *   Agent-Modus:  wss://{proxyHost}/api/voice-live/ws?key=...&agent-id=...&agent-project-name=...  (WebSocket-Proxy)
-     *   Direct-Modus: wss://{host}/voice-live/realtime?api-version=...&model=...&api-key=|access_token=...
-     */
-  /** Holt einen frischen Agent-Access-Token vom Backend-Endpoint. */
-
-  private async fetchAgentToken(): Promise<string> {
-    const url = `${this.tokenEndpoint.replace(/\/$/, "")}/api/voice-live/token`;
-    const headers: Record<string, string> = {};
-    if (this.proxyKey) headers["X-Proxy-Key"] = this.proxyKey;
-    const resp = await fetch(url, { headers });
-    if (!resp.ok) throw new Error(`Token-Endpoint Fehler ${resp.status}`);
-    const data = (await resp.json()) as { token: string };
-    if (!data.token)
-      throw new Error("Token-Endpoint hat kein token-Feld zurückgegeben");
-    return data.token;
-  }
-
-  // ── acquireDataverseToken deaktiviert (MSAL nicht benötigt) ────────────
-  // private async acquireDataverseToken(): Promise<void> {
-  //   if (!this.msalClientId || !this.tenantId || !this.dataverseOrgUrl) return;
-  //   if (!this.msalInstance) {
-  //     this.msalInstance = new msal.PublicClientApplication({ ... });
-  //     await this.msalInstance.initialize();
-  //   }
-  //   const scopes = [`${this.dataverseOrgUrl}/.default`];
-  //   try {
-  //     const result = await this.msalInstance.ssoSilent({ scopes });
-  //     this.dataverseUserToken = result.accessToken;
-  //   } catch {
-  //     const result = await this.msalInstance.acquireTokenPopup({ scopes });
-  //     this.dataverseUserToken = result.accessToken;
-  //   }
-  // }
-
+   * Startet eine neue Voice Live Session:
+   *   1. Baut die WebSocket-Verbindung zum Proxy auf (`/api/voice-live/ws`)
+   *   2. Konfiguriert die Session (Semantic VAD, Noise Suppression, Echo Cancellation, Azure STT)
+   *   3. Startet das Mikrofon
+   *
+   * `mode` steuert, ob dabei der Gesprächsverlauf erhalten bleibt – siehe
+   * `SessionStartMode` und `keepsContext` weiter unten.
+   */
   private async startSession(mode: SessionStartMode = "new"): Promise<void> {
     if (
       !this.agentId ||
@@ -1286,13 +1305,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.setState(mode === "reconnect" ? "reconnecting" : "connecting");
 
     try {
-      // Dataverse User-Token per MSAL deaktiviert – caller-id wird via PCF userId übergeben
-      // if (this.msalClientId && this.tenantId && this.dataverseOrgUrl) {
-      //   await this.acquireDataverseToken();
-      // }
-
-      // Proxy-Modus: WebSocket-Proxy in der Function App übernimmt die Auth
-
+      // WebSocket-Proxy in der Function App übernimmt die Auth gegenüber Azure.
       const proxyHost = this.tokenEndpoint
         .replace(/^https?:\/\//, "")
         .replace(/\/$/, "");
@@ -1330,11 +1343,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         }
 
         this.markConversationActivity();
-
-        // Auth-Message mit Dataverse User-Token deaktiviert (MSAL nicht verwendet)
-        // if (this.dataverseUserToken) {
-        //   this.sendJson({ type: "auth", token: this.dataverseUserToken });
-        // }
 
         if (!keepsContext) {
           this.transcriptText = "";
@@ -1381,8 +1389,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
             type: "azure_deep_noise_suppression",
           },
 
+          // Live-Reference AEC: Der Client liefert das tatsächlich abgespielte
+          // Signal als zweiten Kanal mit, statt dass der Server sein eigenes
+          // gesendetes Audio als Referenz annimmt.
+          //
+          // Der Standardweg (reference_source "server") setzt voraus, dass der
+          // Client sofort abspielt – bei mehr als zwei Sekunden Verzögerung
+          // bricht die Entzerrung zusammen. Da die Wiedergabe hier auf einer
+          // Zeitleiste geplant wird und der Dienst schneller als Echtzeit
+          // streamt, ist genau das der Fall.
           input_audio_echo_cancellation: {
             type: "server_echo_cancellation",
+            ...(VoiceLiveControl.USE_LIVE_REFERENCE_AEC
+              ? { reference_source: "client", channels: 2 }
+              : {}),
           },
 
           input_audio_transcription: {
@@ -1515,18 +1535,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   /**
-     * Verarbeitet eingehende Events vom Voice Live Server.
-     *
-     * Kompatible Events (identisch zur Realtime API):
-     *   - input_audio_buffer.speech_started/stopped
-     *   - response.created / response.audio.delta / response.done
-     *   - response.audio_transcript.delta / .done
-     *   - conversation.item.input_audio_transcription.completed
-     *   - error
-     *   - conversation.item.input_audio_transcription.delta (Streaming User-Transkript)
-     *   - warning (informational, session bleibt offen)
-     */
-
+   * Verarbeitet eingehende Events vom Voice Live Server.
+   *
+   * Kompatible Events (identisch zur Realtime API):
+   *   - input_audio_buffer.speech_started/stopped
+   *   - response.created / response.audio.delta / response.done
+   *   - response.audio_transcript.delta / .done
+   *   - conversation.item.input_audio_transcription.completed
+   *   - error
+   *   - conversation.item.input_audio_transcription.delta (Streaming User-Transkript)
+   *   - warning (informational, session bleibt offen)
+   */
   private handleServerEvent(msg: ServerEvent): void {
     this.log(`← ${msg.type}`);
 
@@ -1673,13 +1692,33 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "mcp_list_tools.completed":
         break;
 
+      case "session.updated": {
+        // Bestätigt der Server Live-Reference AEC? Fehlt reference_source in
+        // der Antwort, ist die API-Version des Proxys zu alt (nötig ab
+        // 2026-07-15) – dann läuft die Echounterdrückung ohne unsere Referenz
+        // und KoRa fällt sich beim Sprechen selbst ins Wort.
+        if (VoiceLiveControl.USE_LIVE_REFERENCE_AEC) {
+          const aec = msg.session?.input_audio_echo_cancellation;
+
+          if (aec?.reference_source === "client") {
+            this.log("Live-Reference AEC aktiv (Referenzkanal bestätigt)");
+          } else {
+            this.log(
+              "WARNUNG: Live-Reference AEC NICHT bestätigt – Proxy braucht " +
+                "api-version 2026-07-15 oder neuer. Mikrofon wird als Mono " +
+                "gelesen, Schalter zurückstellen.",
+            );
+          }
+        }
+        break;
+      }
+
       case "response.output_item.done":
       case "conversation.item.created":
       case "conversation.item.done":
       case "response.content_part.added":
       case "response.content_part.done":
       case "input_audio_buffer.committed":
-      case "session.updated":
       case "response.audio.done":
         // Bekannte Events ohne spezielle Behandlung
         break;
@@ -1874,7 +1913,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         URL.revokeObjectURL(workletUrl);
       }
 
-      this.log("AudioContext angelegt, Worklet registriert");
+      // Sammelpunkt der Wiedergabe. Er hängt an den Lautsprechern und wird
+      // zusätzlich als Echo-Referenz in das Mikrofon-Worklet geführt
+      // (siehe startMicrophone) – daher ein eigener Knoten statt destination.
+      this.playbackBus = this.audioContext.createGain();
+      this.playbackBus.connect(this.audioContext.destination);
+
+      this.log("AudioContext angelegt, Worklet registriert, Wiedergabe-Bus verbunden");
     }
 
     // Bewusst ohne Zustandsprüfung: cleanupConnection() suspendiert ohne zu
@@ -1887,6 +1932,27 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     return this.audioContext;
   }
 
+  /**
+   * Verschränkt Mikrofon und Echo-Referenz zu Stereo für die serverseitige
+   * Echounterdrückung: [mic0, ref0, mic1, ref1, …].
+   *
+   * Die Reihenfolge ist von der Voice Live API vorgegeben – pro Sample-Paar
+   * zuerst das Mikrofon, dann die Referenz. Kanal 1 wird auf die Länge von
+   * Kanal 0 gezwungen, damit die Paare auch dann stimmen, wenn beide Puffer
+   * durch das Resampling um ein Sample auseinanderlaufen.
+   */
+  private interleave(mic: Float32Array, reference: Float32Array): Float32Array {
+    const out = new Float32Array(mic.length * 2);
+
+    for (let i = 0; i < mic.length; i++) {
+      out[i * 2] = mic[i];
+      out[i * 2 + 1] = i < reference.length ? reference[i] : 0;
+    }
+
+    return out;
+  }
+
+  /** Nearest-Neighbor-Resampling auf 24 kHz – kein Anti-Aliasing-Filter. */
   private resample(input: Float32Array, fromRate: number): Float32Array {
     if (fromRate === 24000) return input;
     const ratio = fromRate / 24000;
@@ -1896,15 +1962,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   /**
-     * Mikrofon-Aufnahme starten und Audio-Pipeline aufbauen.
-     *
-     * Pipeline:
-     *   Mikrofon → MediaStreamSource → AudioWorklet → Resample → PCM16 → Base64 → WebSocket
-     *                                 ↘ Analyser → Visualisierung (Orb + VU-Meter)
-     *
-     * Kein manueller Noise Gate – Voice Live macht serverseitige Noise Suppression.
-     */
-
+   * Mikrofon-Aufnahme starten und Audio-Pipeline aufbauen.
+   *
+   * Pipeline:
+   *   Mikrofon → MediaStreamSource → AudioWorklet → Resample → PCM16 → Base64 → WebSocket
+   *                                 ↘ Analyser → Visualisierung (Orb + VU-Meter)
+   *
+   * Kein manueller Noise Gate – Voice Live macht serverseitige Noise Suppression.
+   */
   private async startMicrophone(): Promise<void> {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -1916,8 +1981,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         return;
       }
 
+      // Genau eine Instanz unterdrückt das Echo: entweder der Server über
+      // Live-Reference AEC oder das Gerät. Beides zusammen wäre doppelt,
+      // keines von beiden ließe KoRa sich selbst ins Wort fallen.
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: !VoiceLiveControl.USE_LIVE_REFERENCE_AEC,
+        },
         video: false,
       });
 
@@ -1927,14 +1997,20 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // Die Uhr des Contexts läuft über Verbindungspausen weiter – Zeitlinie zurücksetzen.
       this.nextPlayTime = ctx.currentTime;
 
-      const source = ctx.createMediaStreamSource(this.mediaStream);
+      this.micSource = ctx.createMediaStreamSource(this.mediaStream);
 
       this.analyser = ctx.createAnalyser();
       this.analyser.fftSize = 256;
-      source.connect(this.analyser);
+      this.micSource.connect(this.analyser);
 
-      this.audioWorklet = new AudioWorkletNode(ctx, "processor");
-      source.connect(this.audioWorklet);
+      // Zwei Eingänge: Mikrofon und Echo-Referenz. Der Wiedergabe-Bus liegt
+      // parallel auf den Lautsprechern und auf Eingang 1 – so bekommt der
+      // Server genau das Signal als Referenz, das der Benutzer wirklich hört.
+      this.audioWorklet = new AudioWorkletNode(ctx, "processor", {
+        numberOfInputs: 2,
+      });
+      this.micSource.connect(this.audioWorklet, 0, 0);
+      this.playbackBus?.connect(this.audioWorklet, 0, 1);
 
       // Daten vom Worklet empfangen und an WebSocket senden
       this.audioWorklet.port.onmessage = (e: MessageEvent) => {
@@ -1948,11 +2024,26 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         )
           return;
 
-        const raw = e.data as Float32Array;
-        const input = this.resample(raw, nativeRate);
-        const pcm16 = this.float32ToPcm16(input);
+        const { mic, reference } = e.data as {
+          mic: Float32Array;
+          reference: Float32Array;
+        };
+
+        // Beide Kanäle einzeln resampeln – der Context läuft auf Geräterate,
+        // gesendet wird mit 24 kHz. Erst danach verschränken, sonst würde das
+        // Resampling die Sample-Paare auseinanderreißen.
+        //
+        // Ohne Live-Reference AEC erwartet der Server Mono. Stereo zu senden
+        // läse er als Mono und verstünde nichts mehr – der Referenzkanal
+        // bleibt dann also weg.
+        const micResampled = this.resample(mic, nativeRate);
+        const payload = VoiceLiveControl.USE_LIVE_REFERENCE_AEC
+          ? this.interleave(micResampled, this.resample(reference, nativeRate))
+          : micResampled;
+
+        const pcm16 = this.float32ToPcm16(payload);
         const base64 = this.bufferToBase64(pcm16.buffer as ArrayBuffer);
-        
+
         this.sendJson({ type: "input_audio_buffer.append", audio: base64 });
       };
 
@@ -1989,14 +2080,22 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
+  /** Treibt Orb-Skalierung und VU-Meter aus der Lautstärke (RMS) des Mikrofonsignals. */
   private startVisualization(): void {
     if (!this.analyser) return;
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     const barCount = this.vuBars.length;
 
     const tick = () => {
+      // analyser wird beim Trennen genullt – ohne Prüfung würde eine bereits
+      // eingeplante Frame-Ausführung hier krachen.
+      if (!this.analyser) {
+        this.animationFrameId = null;
+        return;
+      }
+
       this.animationFrameId = requestAnimationFrame(tick);
-      this.analyser!.getByteFrequencyData(dataArray);
+      this.analyser.getByteFrequencyData(dataArray);
       let sum = 0;
 
       // Nur tatsächliche Lautstärke berechnen, wenn nicht gemuted
@@ -2023,6 +2122,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     tick();
   }
 
+  /** Dekodiert einen Base64/PCM16-Audio-Chunk und plant ihn lückenlos auf der Wiedergabe-Zeitleiste ein. */
   private playAudioDelta(base64: string): void {
     if (!this.audioContext) return;
 
@@ -2045,7 +2145,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     audioBuffer.getChannelData(0).set(float32);
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
+    // Über den Bus statt direkt auf destination: Er speist zusätzlich den
+    // Referenzkanal des Worklets für die serverseitige Echounterdrückung.
+    source.connect(this.playbackBus ?? this.audioContext.destination);
     const now = this.audioContext.currentTime;
     const startAt = Math.max(now, this.nextPlayTime);
     source.start(startAt);
@@ -2322,6 +2424,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
+  /** Vollständiger Ausstieg: cleanup() + Ruhemodus-Status zurücksetzen, State → idle. */
   private stopSession(): void {
     this.intentionalClose = true;
 
@@ -2370,9 +2473,44 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.ws = null;
     }
 
+    // Der AudioContext überlebt einzelne Verbindungen (siehe
+    // ensureAudioContext), also muss der Sitzungs-Graph hier von Hand abgebaut
+    // werden. Früher hat close() das miterledigt – bleiben die Knoten stehen,
+    // sammeln sich Quellknoten auf beendeten MediaStreams an und der neue
+    // Mikrofonpfad liefert keine Daten mehr.
+    //
+    // Reihenfolge ist wichtig: erst die Knoten trennen, dann die Tracks
+    // stoppen. Andersherum steht kurzzeitig ein Quellknoten auf einem
+    // beendeten Stream im Graph – genau der Zustand, der das Problem auslöst.
     if (this.audioWorklet) {
+      // Handler lösen, bevor der Knoten geht: Ein noch lebendes Worklet würde
+      // sonst Audio in die nächste Sitzung schieben.
+      this.audioWorklet.port.onmessage = null;
+      this.audioWorklet.port.close();
+
+      // Die Referenz-Kante gehört dem Bus, nicht dem Worklet – sie muss dort
+      // gelöst werden. Gezielt nur diese eine Verbindung, sonst verliert der
+      // Bus auch die Lautsprecher. Der Bus selbst überlebt die Sitzung.
+      try {
+        this.playbackBus?.disconnect(this.audioWorklet, 0, 1);
+      } catch {
+        /* war nicht verbunden */
+      }
+
       this.audioWorklet.disconnect();
       this.audioWorklet = null;
+    }
+
+    if (this.micSource) {
+      // disconnect() muss auf der Quelle passieren – die Kante zum Worklet
+      // hängt an ihr, nicht am Zielknoten.
+      this.micSource.disconnect();
+      this.micSource = null;
+    }
+
+    if (this.analyser) {
+      this.analyser.disconnect();
+      this.analyser = null;
     }
 
     if (this.mediaStream) {
@@ -2380,9 +2518,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.mediaStream = null;
     }
 
-    if (this.audioContext) {
-      void this.audioContext.suspend();
-    }
+    // Bewusst kein suspend(): Das schließt den Ausgabepfad, und beim Öffnen
+    // entscheidet Android neu, ob die Wiedergabe auf dem Musik- oder dem
+    // Anruf-Stream landet. Der Context läuft durch, sein Graph ist jetzt leer
+    // und rendert Stille.
 
     if (this.orbEl) this.orbEl.style.transform = "";
 
@@ -2407,6 +2546,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.pendingDormantTransition = false;
   }
 
+  /** cleanupConnection() + Reconnect-Timer stoppen – gemeinsamer Kern von stopSession() und destroy(). */
   private cleanup(): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -2433,13 +2573,17 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.cleanup();
 
     // Der AudioContext überlebt bewusst einzelne Verbindungen (siehe
-    // ensureAudioContext) – cleanupConnection() suspendiert ihn nur. Beim
-    // Zerstören des Controls muss er aber wirklich geschlossen werden, sonst
-    // stapeln sich in einer Canvas App bei jedem Screen-Wechsel neue Contexts,
-    // bis der Browser keinen weiteren mehr zulässt.
+    // ensureAudioContext). Beim Zerstören des Controls muss er aber wirklich
+    // geschlossen werden, sonst stapeln sich in einer Canvas App bei jedem
+    // Screen-Wechsel neue Contexts, bis der Browser keinen weiteren zulässt.
     //
     // Bewusst hier und NICHT in cleanup(): Das ruft auch stopSession() auf,
     // dort würde ein close() die Wiederverwendung wieder zunichtemachen.
+    if (this.playbackBus) {
+      this.playbackBus.disconnect();
+      this.playbackBus = null;
+    }
+
     if (this.audioContext) {
       void this.audioContext.close();
       this.audioContext = null;
