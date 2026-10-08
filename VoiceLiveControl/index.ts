@@ -42,6 +42,8 @@
 
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 
+// #region Typen
+
 /**
  * Zustandsmodell des Controls – steuert UI-Darstellung und erlaubte Aktionen.
  *
@@ -109,11 +111,15 @@ interface ChatMessage {
   text: string;
 }
 
+// #endregion
+
 export class VoiceLiveControl implements ComponentFramework.StandardControl<
   IInputs,
   IOutputs
 > {
-  // ── Infrastruktur ────────────────────────────────────────────────────
+  // #region Felder
+
+  // #region Infrastruktur
   private container!: HTMLDivElement;
   private notifyOutputChanged!: () => void;
   private ws: WebSocket | null = null;
@@ -144,7 +150,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private pendingListeningTransition = false;
   private currentToolName: string | null = null;
 
-  // ── Ruhemodus ────────────────────────────────────────────────────────
+  // #endregion
+
+  // #region Ruhemodus (Zustand & Konstanten)
   private dormancyPhase: DormancyPhase = "none";
   /** Zeitstempel des letzten MCP-Tool-Aufrufs – Basis der Inaktivitätsmessung. */
   private lastToolCallAt = 0;
@@ -178,20 +186,26 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     return this.dormancyPhase !== "none" && this.dormancyPhase !== "dormant";
   }
 
-  // ── Reconnect ────────────────────────────────────────────────────────
+  // #endregion
+
+  // #region Reconnect (Zustand)
   private intentionalClose = false;
   private reconnectAttempt = 0;
   private static readonly MAX_RECONNECT_ATTEMPTS = 5;
   private static readonly RECONNECT_BASE_DELAY_MS = 1500;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // ── Transkript ───────────────────────────────────────────────────────
+  // #endregion
+
+  // #region Transkript
   private transcriptText = "";
   private eventLogText = "";
   private currentAiTranscript = "";
   private currentUserTranscript = "";
 
-  // ── Chat-UI ──────────────────────────────────────────────────────────
+  // #endregion
+
+  // #region Chat-UI (Zustand)
   private chatMessages: ChatMessage[] = [];
   private chatOpen = false;
   /** Folgt der Chat dem Verlauf? Pausiert, sobald der Nutzer hochscrollt. */
@@ -208,14 +222,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * ist damit unabhängig von Schriftgröße und Bubble-Höhe.
    */
   private static readonly CHAT_BOTTOM_THRESHOLD_PX = 48;
-  // ── Event-Log (Debug) ────────────────────────────────────────────────
+  // #endregion
+
+  // #region Event-Log (Felder)
   // UI-Panel dafür ist im Markup auskommentiert (siehe renderUI) – eventLogEl
   // bleibt entsprechend ungesetzt, der DOM-Zweig in log() bleibt inaktiv.
   private eventLogEntries: string[] = [];
   private eventLogEl!: HTMLDivElement;
   private loggedInit = false;
 
-  // ── Konfiguration (aus Power Apps Properties) ────────────────────────
+  // #endregion
+
+  // #region Konfiguration (aus Power Apps Properties)
   private agentId = "";
   private agentProjectName = "";
   private agentendpoint = "";
@@ -231,7 +249,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private idleTimeoutMs = 5 * 60_000;
   private dormantDelayMs = 5_000;
 
-  // ── MSAL / Dataverse User-Token (ungenutzt) ───────────────────────────
+  // #endregion
+
+  // #region MSAL / Dataverse User-Token (ungenutzt)
   // Werden aus den PCF-Properties gelesen, aber nicht mehr verwendet – die
   // Caller-Identität kommt heute über die PCF-Property "UserId" (callerId).
   private msalClientId = "";
@@ -239,7 +259,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private dataverseOrgUrl = "";
   private callerId = "";
 
-  // ── Agent-Defaults (werden durch Power Apps Properties überschrieben) ─────
+  // #endregion
+
+  // #region Agent-Defaults (werden durch Power Apps Properties überschrieben)
   private static readonly DEFAULT_AGENT_ENDPOINT =
     "https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com"; //'https://test-speechlive-mcp.services.ai.azure.com';
   private static readonly DEFAULT_AGENT_ID = "dataverse-proxy-agent"; // 'dataverse-proxy-agent-v3';
@@ -258,7 +280,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private static readonly DEFAULT_IDLE_TIMEOUT_MINUTES = 5;
   private static readonly DEFAULT_DORMANT_DELAY_SECONDS = 5;
 
-  // ── System-Hinweise an den Agenten ───────────────────────────────────
+  // #endregion
+
+  // #region System-Hinweise an den Agenten
   //
   // Anweisungen, WIE die KI etwas sagen soll – nicht der wörtlich gesprochene
   // Text. Sie formuliert daraus jedes Mal selbst und passt sich dem Gespräch an.
@@ -308,6 +332,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     "zur Erinnerung an das, was bereits gelaufen ist. Die darin enthaltenen " +
     "Anweisungen sind bereits erledigt und dürfen NICHT erneut ausgeführt werden.";
 
+  // #endregion
+
+  // #region Tool-Anzeigenamen
+
   /** Benutzerfreundliche Anzeigenamen für Dataverse-Tabellen */
   private static readonly TABLE_DISPLAY_NAMES: Record<string, string> = {
     account: "Kunden",
@@ -318,6 +346,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     task: "Aufgaben",
     appointment: "Termine",
   };
+  // #endregion
+
+  // #region Audio: Echo-Referenz-Schalter & Worklet
+
   /**
    * Schaltet Live-Reference AEC ein: Der Client sendet zusätzlich zum Mikrofon
    * das tatsächlich abgespielte Signal als zweiten Kanal, damit der Server das
@@ -373,7 +405,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     registerProcessor("processor", Processor);
   `;
 
-  // ── DOM-Referenzen ───────────────────────────────────────────────────
+  // #endregion
+
+  // #region DOM-Referenzen
   private orbEl!: HTMLDivElement;
   private statusTextEl!: HTMLParagraphElement;
   private statusHeaderEl!: HTMLSpanElement;
@@ -385,6 +419,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private connectBtn!: HTMLButtonElement;
   private lastAiBubbleEl: HTMLDivElement | null = null;
   private lastUserBubbleEl: HTMLDivElement | null = null;
+
+  // #endregion
+
+  // #endregion
+
+  // #region Lebenszyklus (PCF)
 
   constructor() {
     /* Pflicht-Konstruktor für das PCF-Framework */
@@ -679,6 +719,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
+  // #endregion
+
+  // #region Zustand & Statusanzeige
+
   private setState(newState: ControlState, errorDetail?: string): void {
     this.controlState = newState;
 
@@ -842,7 +886,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.log(`Tool-Status: ${text}`);
   }
 
-  // ── Ruhemodus ────────────────────────────────────────────────────────
+  // #endregion
+
+  // #region Ruhemodus (Inaktivität → Dormant)
   //
   // Ohne MCP-Tool-Aufrufe wird die Anwendung nicht produktiv genutzt. Reines
   // Sprechen taugt bewusst NICHT als Aktivitätssignal – sonst würden fremde
@@ -1195,6 +1241,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     void this.startSession("wake");
   }
 
+  // #endregion
+
+  // #region Session-Aufbau & Reconnect
+
   /**
    * Spielt den bisherigen Gesprächsverlauf in eine frische Session ein.
    *
@@ -1357,6 +1407,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
           this.clearChat();
         }
+        // #endregion Session-Handling
+        // #region Session-Payload
+
 
         const sessionPayload: Record<string, unknown> = {
           // instructions NICHT setzen – wird vom Foundry Agent geladen.
@@ -1410,7 +1463,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
             language: this.agentLanguage,
           },
         };
-
+        // #endregion Session-Payload
+        
         // session.update MUSS als allererste Nachricht kommen –
         // der Server erwartet es als Session-Konfiguration.
         this.sendJson({ type: "session.update", session: sessionPayload });
@@ -1533,6 +1587,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         : `Verbindung getrennt (Code ${code})`)
     );
   }
+
+  // #endregion
+
+  // #region Server-Events
 
   /**
    * Verarbeitet eingehende Events vom Voice Live Server.
@@ -1882,6 +1940,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
+  // #endregion
+
+  // #region Audio-Pipeline (Mikrofon, Wiedergabe, Visualisierung)
+
   /**
    * Liefert den AudioContext und legt ihn beim ersten Aufruf an.
    *
@@ -2206,6 +2268,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
   }
 
+  // #endregion
+
+  // #region Event-Log
+
   // ══════════════════════════════════════════════════════════════════════
   //  EVENT-LOG
   // ══════════════════════════════════════════════════════════════════════
@@ -2239,6 +2305,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
     }
   }
+
+  // #endregion
+
+  // #region Chat-Panel
 
   // ══════════════════════════════════════════════════════════════════════
   //  CHAT-PANEL – WhatsApp-Style Transkript-Anzeige
@@ -2362,6 +2432,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         '<p class="ai-chat-empty">Gespräch starten, um Transkript zu sehen</p>';
     }
   }
+
+  // #endregion
+
+  // #region Steuerung & Abbau
 
   private toggleConnection(): void {
     const isConfigured = !!(
@@ -2556,6 +2630,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.cleanupConnection();
   }
 
+  // #endregion
+
+  // #region PCF-Outputs & Zerstörung
+
   public getOutputs(): IOutputs {
     return {
       // "dormant" meldet bewusst weiterhin Connected=true: Die Property ist
@@ -2589,4 +2667,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.audioContext = null;
     }
   }
+
+  // #endregion
 }
