@@ -21,6 +21,7 @@
    Füllt den gesamten verfügbaren Platz und ordnet die drei Bereiche
    (Header, Orb-Bereich, Footer) vertikal an.
    "justify-content: space-between" verteilt sie gleichmäßig mit Abstand. */
+
 .ai-voice-container {
     width: 100%;                                  /* volle Breite des Elternelements */
     height: 100%;                                 /* volle Höhe des Elternelements */

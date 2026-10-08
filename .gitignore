@@ -21,3 +21,5 @@
 
 # macos
 .DS_Store
+docs/
+docs/**
