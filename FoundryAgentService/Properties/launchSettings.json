@@ -1,0 +1,26 @@
+{
+  "profiles": {
+    "deploy-agent-v3": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "APP_MODE": "deploy-agent-only",
+        "PROJECT_ENDPOINT": "https://test-speechlive-mcp.services.ai.azure.com/api/projects/proj-default",
+        "MODEL_DEPLOYMENT_NAME": "gpt-4.1",
+        "AGENT_NAME": "dataverse-proxy-playground-agent-v3",
+        "MCP_SERVER_LABEL": "dataverse",
+        "PROXY_API_KEY": "qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057"
+      }
+    },
+    "run-test": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "APP_MODE": "deploy-and-test",
+        "PROJECT_ENDPOINT": "https://test-speechlive-mcp.services.ai.azure.com/api/projects/proj-default",
+        "MODEL_DEPLOYMENT_NAME": "gpt-4.1",
+        "AGENT_NAME": "dataverse-proxy-playground-agent-v3",
+        "MCP_SERVER_LABEL": "dataverse",
+        "PROXY_API_KEY": "qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057"
+      }
+    }
+  }
+}
