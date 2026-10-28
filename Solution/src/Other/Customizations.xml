@@ -12,6 +12,7 @@
   <CustomControls />
   <SolutionPluginAssemblies />
   <EntityDataProviders />
+  <Connectors />
   <Languages>
     <Language>1033</Language>
   </Languages>

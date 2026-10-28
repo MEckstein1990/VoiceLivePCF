@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Connector xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <connectorid>66b9a4cf-6fb2-4653-a3e1-12a5892241ca</connectorid>
+  <description>Stellt Session-Tokens für das VoiceLive-Control aus. Das Entra-Token des angemeldeten Nutzers schickt der Connector selbst mit.</description>
+  <displayname>KoRa VoiceLive</displayname>
+  <iconbrandcolor>#007ee5</iconbrandcolor>
+  <name>adesso_KoRaVoiceLive</name>
+  <connectortype>1</connectortype>
+  <openapidefinition>/Connector/adesso_KoRaVoiceLive_openapidefinition.json</openapidefinition>
+  <connectionparameters>/Connector/adesso_KoRaVoiceLive_connectionparameters.json</connectionparameters>
+  <policytemplateinstances>/Connector/adesso_KoRaVoiceLive_policytemplateinstances.json</policytemplateinstances>
+</Connector>

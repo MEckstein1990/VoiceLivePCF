@@ -1,0 +1,15 @@
+<environmentvariabledefinition schemaname="adesso_KoRaVoiceLiveClientSecret">
+  <description default="Client Secret der App-Registrierung, über die sich der Connector anmeldet. Typ Text: Der Wert wird in Dataverse unverschlüsselt gespeichert, für Produktion einen Key-Vault-Verweis (Typ Secret) verwenden.">
+    <label description="Client Secret der App-Registrierung, über die sich der Connector anmeldet. Typ Text: Der Wert wird in Dataverse unverschlüsselt gespeichert, für Produktion einen Key-Vault-Verweis (Typ Secret) verwenden." languagecode="1033" />
+    <label description="Client Secret der App-Registrierung, über die sich der Connector anmeldet. Typ Text: Der Wert wird in Dataverse unverschlüsselt gespeichert, für Produktion einen Key-Vault-Verweis (Typ Secret) verwenden." languagecode="1031" />
+  </description>
+  <displayname default="KoRa VoiceLive: Client Secret">
+    <label description="KoRa VoiceLive: Client Secret" languagecode="1033" />
+    <label description="KoRa VoiceLive: Client Secret" languagecode="1031" />
+  </displayname>
+  <introducedversion>1.43.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>1</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>

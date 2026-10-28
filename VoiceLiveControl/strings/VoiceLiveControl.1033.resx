@@ -47,47 +47,19 @@
   <data name="VoiceLiveChat_Desc" xml:space="preserve">
     <value>Echtzeit-Sprach-Dialog mit KI-Assistent via Azure Voice Live API</value>
   </data>
-  <!-- AgentId -->
-  <data name="AgentId_Display" xml:space="preserve">
-    <value>Agent ID</value>
+  <!-- SessionProperties -->
+  <data name="SessionProperties_Display" xml:space="preserve">
+    <value>Session-Properties</value>
   </data>
-  <data name="AgentId_Desc" xml:space="preserve">
-    <value>ID des Foundry-Agenten.</value>
+  <data name="SessionProperties_Desc" xml:space="preserve">
+    <value>Antwort des Connectors „KoRa VoiceLive“ (GetSessionToken) als JSON, mit access_token und endpoint. Schlägt der Aufruf fehl, "error:&lt;eindeutiger Zusatz, z. B. Uhrzeit&gt;:&lt;Meldung&gt;" liefern.</value>
   </data>
-  <!-- AgentProjectName -->
-  <data name="AgentProjectName_Display" xml:space="preserve">
-    <value>Agent Projektname</value>
+  <!-- OnTokenNeeded -->
+  <data name="OnTokenNeeded_Display" xml:space="preserve">
+    <value>OnTokenNeeded</value>
   </data>
-  <data name="AgentProjectName_Desc" xml:space="preserve">
-    <value>Name des Agent-Projekts im Foundry-Backend.</value>
-  </data>
-  <!-- AgentEndpoint -->
-  <data name="AgentEndpoint_Display" xml:space="preserve">
-    <value>Agent Endpoint</value>
-  </data>
-  <data name="AgentEndpoint_Desc" xml:space="preserve">
-    <value>Foundry Endpoint-URL für den Agenten.</value>
-  </data>
-  <!-- TokenEndpoint -->
-  <data name="TokenEndpoint_Display" xml:space="preserve">
-    <value>Token Endpoint</value>
-  </data>
-  <data name="TokenEndpoint_Desc" xml:space="preserve">
-    <value>Endpoint zum Abruf des Agent Access Tokens.</value>
-  </data>
-  <!-- ProxyKey -->
-  <data name="ProxyKey_Display" xml:space="preserve">
-    <value>Proxy Key</value>
-  </data>
-  <data name="ProxyKey_Desc" xml:space="preserve">
-    <value>Key für den WebSocket-Proxy zur Authentifizierung.</value>
-  </data>
-  <!-- UserId -->
-  <data name="UserId_Display" xml:space="preserve">
-    <value>Benutzer-ID</value>
-  </data>
-  <data name="UserId_Desc" xml:space="preserve">
-    <value>ID des aktuellen Dataverse-Benutzers, wird als caller-id an den Proxy übergeben.</value>
+  <data name="OnTokenNeeded_Desc" xml:space="preserve">
+    <value>Wird ausgelöst, wenn das Control ein neues Session-Token braucht (Start, Wiederverbinden, Aufwecken). Die App ruft den Connector und setzt SessionProperties.</value>
   </data>
   <!-- UserName -->
   <data name="UserName_Display" xml:space="preserve">
@@ -95,27 +67,6 @@
   </data>
   <data name="UserName_Desc" xml:space="preserve">
     <value>Anzeigename des Benutzers. Wird für die persönliche Begrüßung durch den Agenten verwendet.</value>
-  </data>
-  <!-- MsalClientId -->
-  <data name="MsalClientId_Display" xml:space="preserve">
-    <value>MSAL Client ID</value>
-  </data>
-  <data name="MsalClientId_Desc" xml:space="preserve">
-    <value>Client-ID der Azure AD App-Registrierung für die MSAL-Authentifizierung.</value>
-  </data>
-  <!-- TenantId -->
-  <data name="TenantId_Display" xml:space="preserve">
-    <value>Tenant ID</value>
-  </data>
-  <data name="TenantId_Desc" xml:space="preserve">
-    <value>Azure AD Tenant-ID für die MSAL-Authentifizierung.</value>
-  </data>
-  <!-- DataverseOrgUrl -->
-  <data name="DataverseOrgUrl_Display" xml:space="preserve">
-    <value>Dataverse Org URL</value>
-  </data>
-  <data name="DataverseOrgUrl_Desc" xml:space="preserve">
-    <value>Basis-URL der Dataverse-Organisation (ohne abschließenden Slash), wird für Dataverse-Zugriffe verwendet.</value>
   </data>
   <!-- Connected -->
   <data name="Connected_Display" xml:space="preserve">

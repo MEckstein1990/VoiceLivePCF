@@ -100,7 +100,7 @@ interface ServerEvent {
   arguments?: string;
   /** Bestätigte Session-Konfiguration (bei session.updated). */
   session?: {
-    input_audio_echo_cancellation?: { reference_source?: string };
+    audio?: { input?: { echo_cancellation?: { reference_source?: string } } };
   };
 }
 
@@ -149,6 +149,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private greetingSent = false;
   private pendingListeningTransition = false;
   private currentToolName: string | null = null;
+  /** Ein MCP-Aufruf der laufenden Antwort ist fertig; die Antwort darauf muss noch angefordert werden. */
+  private mcpFollowUpPending = false;
 
   // #endregion
 
@@ -234,11 +236,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   // #endregion
 
   // #region Konfiguration (aus Power Apps Properties)
-  private agentId = "";
-  private agentProjectName = "";
-  private agentendpoint = "";
-  private tokenEndpoint = "";
-  private proxyKey = "";
   private agentVoice = "de-DE-Florian:DragonHDLatestNeural";
   private silenceDurationMs = 2000;
   private vadThreshold = 0.5;
@@ -251,25 +248,25 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region MSAL / Dataverse User-Token (ungenutzt)
-  // Werden aus den PCF-Properties gelesen, aber nicht mehr verwendet – die
-  // Caller-Identität kommt heute über die PCF-Property "UserId" (callerId).
-  private msalClientId = "";
-  private tenantId = "";
-  private dataverseOrgUrl = "";
-  private callerId = "";
+  // #region Session-Token (kommt aus der App)
+  // Das Control hat kein Entra-Token. Die App ruft den Custom Connector „KoRa VoiceLive“ (er meldet den Nutzer an
+  // und schickt dessen Token an POST /api/voice-live/token) und liefert dessen Antwort als JSON über die
+  // Property SessionProperties (access_token und endpoint, den WebSocket-Endpunkt des Backends).
+  // Braucht das Control ein neues Token, löst es das Event OnTokenNeeded aus.
+  // Schlägt der Aufruf in der App fehl, liefert sie statt des JSON "error:<eindeutiger Zusatz>:<Meldung>".
+  // Der Zusatz (z. B. die Uhrzeit) sorgt dafür, dass sich der Wert bei jedem Fehler ändert, denn Power Apps
+  // meldet dem Control nur Änderungen.
+  private sessionProperties = "";
+  private tokenWaiter: ((value: string) => void) | null = null;
+  private events: ComponentFramework.Context<IInputs>["events"] | null = null;
+
+  // Reserve für eine App, die das Event gar nicht beantwortet. Fehler der App kommen sofort an.
+  // Großzügig, weil der erste Aufruf ein kaltes Backend treffen kann.
+  private static readonly TOKEN_WAIT_MS = 20_000;
 
   // #endregion
 
-  // #region Agent-Defaults (werden durch Power Apps Properties überschrieben)
-  private static readonly DEFAULT_AGENT_ENDPOINT =
-    "https://foundry-enbw-KoRa-AI-sc.services.ai.azure.com"; //'https://test-speechlive-mcp.services.ai.azure.com';
-  private static readonly DEFAULT_AGENT_ID = "dataverse-proxy-agent"; // 'dataverse-proxy-agent-v3';
-  private static readonly DEFAULT_AGENT_PROJECT = "proj-default";
-  private static readonly DEFAULT_TOKEN_ENDPOINT =
-    "https://func-voicelive-kora.azurewebsites.net"; //'https://voicelivesessionapi-fgc4ebcfcnc3awef.germanywestcentral-01.azurewebsites.net';
-  private static readonly DEFAULT_PROXY_KEY =
-    "qXKfGt8HOB9gNVQncysd1MAjYvo2bCz64wTIiZUlRLxrE057";
+  // #region Defaults (werden durch Power Apps Properties überschrieben)
   private static readonly DEFAULT_AGENT_VOICE =
     "de-DE-Florian:DragonHDLatestNeural";
   private static readonly DEFAULT_AGENT_LANGUAGE = "de";
@@ -596,26 +593,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // in diesem Fall greifen die eingebauten Defaults.
     const prop = (raw: string | null | undefined, def: string): string =>
       raw && raw !== "val" && raw !== "undefined" ? raw : def;
-    this.agentId = prop(
-      context.parameters.AgentId.raw,
-      VoiceLiveControl.DEFAULT_AGENT_ID,
-    );
-    this.agentProjectName = prop(
-      context.parameters.AgentProjectName.raw,
-      VoiceLiveControl.DEFAULT_AGENT_PROJECT,
-    );
-    this.tokenEndpoint = prop(
-      context.parameters.TokenEndpoint.raw,
-      VoiceLiveControl.DEFAULT_TOKEN_ENDPOINT,
-    );
-    this.proxyKey = prop(
-      context.parameters.ProxyKey.raw,
-      VoiceLiveControl.DEFAULT_PROXY_KEY,
-    );
-    this.agentendpoint = prop(
-      context.parameters.AgentEndpoint.raw,
-      VoiceLiveControl.DEFAULT_AGENT_ENDPOINT,
-    );
     this.agentVoice = prop(
       context.parameters.AgentVoice.raw,
       VoiceLiveControl.DEFAULT_AGENT_VOICE,
@@ -628,11 +605,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       context.parameters.VoiceSpeed.raw,
       VoiceLiveControl.DEFAULT_VOICE_SPEED,
     );
-    this.msalClientId = (context.parameters.MsalClientId.raw ?? "").trim();
-    this.tenantId = (context.parameters.TenantId.raw ?? "").trim();
-    this.dataverseOrgUrl = (context.parameters.DataverseOrgUrl.raw ?? "")
-      .replace(/\/$/, "")
-      .trim();
+    // Session-Properties aus der App: Ein neuer Wert beantwortet die offene Anforderung
+    // (siehe requestSessionToken). Ohne offene Anforderung wird er nur gemerkt.
+    this.events = context.events;
+    const incoming = (context.parameters.SessionProperties.raw ?? "").trim();
+    if (incoming && incoming !== this.sessionProperties) {
+      this.sessionProperties = incoming;
+      const waiter = this.tokenWaiter;
+      this.tokenWaiter = null;
+      waiter?.(incoming);
+    }
     this.silenceDurationMs =
       typeof context.parameters.SilenceDurationMs.raw === "number"
         ? context.parameters.SilenceDurationMs.raw
@@ -667,33 +649,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.log("Ruhemodus deaktiviert – laufender Ablauf wird abgebrochen");
       this.abortDormancy();
     }
-    // Canvas Apps: context.userSettings.userId ist nicht verfügbar (nur Model-Driven Apps).
-    // Die User-GUID wird als PCF-Input-Property "UserId" übergeben.
-    // Canvas App Formel: LookUp(SystemUsers, 'Azure AD Object ID' = User().ObjectId, SystemUserId)
-    this.callerId = (context.parameters.UserId?.raw as string | null | undefined) ?? "";
     this.userName = prop(
       context.parameters.UserName.raw,
       VoiceLiveControl.DEFAULT_USER_NAME,
     );
 
-
     if (!this.loggedInit) {
       this.loggedInit = true;
-      this.log(`Init: agentId=${this.agentId}, endpoint=${this.agentendpoint}`);
-    }
-
-    const configured = !!(
-      this.agentId &&
-      this.agentProjectName &&
-      this.tokenEndpoint &&
-      this.proxyKey &&
-      this.agentendpoint
-    );
-
-    if (this.connectBtn) {
-      this.connectBtn.disabled = !configured;
-
-      if (!configured) this.connectBtn.title = "Konfiguration unvollständig";
+      this.log("Init");
     }
 
     const isActive = context.parameters.Connected.raw === true;
@@ -702,13 +665,11 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.previousIsActive = isActive;
 
       this.log(
-        `Connected=${isActive}, configured=${configured}, state=${this.controlState}`,
+        `Connected=${isActive}, state=${this.controlState}`,
       );
 
-      if (isActive && configured && this.controlState === "idle") {
+      if (isActive && this.controlState === "idle") {
         void this.startSession();
-      } else if (isActive && !configured) {
-        this.log("FEHLER: Nicht konfiguriert – kein Token/Endpoint vorhanden");
       } else if (
         !isActive &&
         this.controlState !== "idle" &&
@@ -1331,16 +1292,72 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * `mode` steuert, ob dabei der Gesprächsverlauf erhalten bleibt – siehe
    * `SessionStartMode` und `keepsContext` weiter unten.
    */
-  private async startSession(mode: SessionStartMode = "new"): Promise<void> {
-    if (
-      !this.agentId ||
-      !this.agentProjectName ||
-      !this.tokenEndpoint ||
-      !this.proxyKey ||
-      !this.agentendpoint
-    )
-      return;
+  /**
+   * Fordert bei der App ein neues Session-Token an (Event OnTokenNeeded) und wartet auf die
+   * Property SessionProperties (JSON mit access_token und endpoint). Bei einem Fehler liefert die App
+   * "error:<eindeutiger Zusatz>:<Meldung>", das Control bricht dann sofort mit dieser Meldung ab.
+   * Die Wartezeit ist nur die Reserve für eine App, die das Event nicht beantwortet.
+   */
+  private requestSessionToken(): Promise<{
+    accessToken: string;
+    endpoint: string;
+  }> {
+    return new Promise((resolve, reject) => {
+      const raiseTokenNeeded = this.events?.OnTokenNeeded;
+      if (!raiseTokenNeeded) {
+        reject(
+          new Error(
+            "Das Event OnTokenNeeded gibt es nur in Canvas-Apps und Custom Pages",
+          ),
+        );
+        return;
+      }
 
+      const timer = setTimeout(() => {
+        this.tokenWaiter = null;
+        reject(
+          new Error(
+            "Die App hat kein Session-Token geliefert (ist OnTokenNeeded belegt?)",
+          ),
+        );
+      }, VoiceLiveControl.TOKEN_WAIT_MS);
+
+      this.tokenWaiter = (value: string) => {
+        clearTimeout(timer);
+        if (value.startsWith("error:")) {
+          const message = value.split(":").slice(2).join(":").trim();
+          reject(
+            new Error(message || "Session-Token konnte nicht abgerufen werden"),
+          );
+          return;
+        }
+
+        let parsed: { access_token?: unknown; endpoint?: unknown } = {};
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          // fällt unten in die Fehlermeldung
+        }
+        const accessToken =
+          typeof parsed.access_token === "string" ? parsed.access_token : "";
+        const endpoint =
+          typeof parsed.endpoint === "string" ? parsed.endpoint : "";
+        if (!accessToken || !endpoint.startsWith("wss://")) {
+          reject(
+            new Error(
+              "SessionProperties enthält kein gültiges JSON mit access_token und endpoint (wss://…)",
+            ),
+          );
+          return;
+        }
+        resolve({ accessToken, endpoint });
+      };
+
+      raiseTokenNeeded();
+    });
+  }
+
+  private async startSession(mode: SessionStartMode = "new"): Promise<void> {
     this.intentionalClose = false;
 
     // Nur beim automatischen Reconnect bleibt der Zähler stehen – ein
@@ -1355,20 +1372,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.setState(mode === "reconnect" ? "reconnecting" : "connecting");
 
     try {
-      // WebSocket-Proxy in der Function App übernimmt die Auth gegenüber Azure.
-      const proxyHost = this.tokenEndpoint
-        .replace(/^https?:\/\//, "")
-        .replace(/\/$/, "");
+      // Session-Token und Backend-Endpunkt von der App holen. Sie ruft den Custom Connector, der den Nutzer
+      // anmeldet; das Backend prüft dabei Token und Ziel (Agent + Dataverse-Org). Agent-Parameter und Nutzer
+      // stehen im Token, nicht in der WebSocket-URL. Ohne Token gibt es keine Session.
+      // Das Backend in der Function App übernimmt die Auth gegenüber Azure und Dataverse.
+      const { accessToken, endpoint } = await this.requestSessionToken();
 
-      const wsUrl =
-        `wss://${proxyHost}/api/voice-live/ws` +
-        `?key=${encodeURIComponent(this.proxyKey)}` +
-        `&agent-name=${encodeURIComponent(this.agentId)}` +
-        `&agent-project-name=${encodeURIComponent(this.agentProjectName)}` +
-        `&endpoint=${encodeURIComponent(this.agentendpoint)}` + 
-        `&caller-id=${encodeURIComponent(this.callerId)}`;
+      const wsUrl = `${endpoint}?access_token=${encodeURIComponent(accessToken)}`;
 
-      this.log(`WebSocket öffnet: wss://${proxyHost}/api/voice-live/ws`);
+      this.log(`WebSocket öffnet: ${endpoint}`);
 
       this.ws = new WebSocket(wsUrl);
 
@@ -1407,60 +1419,71 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
           this.clearChat();
         }
+        this.mcpFollowUpPending = false;
         // #endregion Session-Handling
         // #region Session-Payload
 
 
+        // Voice-Agent-Endpunkt (kind: voice): Format der GA-Realtime-API mit
+        // verschachteltem audio.input / audio.output statt flacher Felder.
+        // Turn-Detection-Typ und Echo-Cancellation-Kanäle muss die Agent-Definition
+        // schon tragen (azure_semantic_vad_multilingual, bei USE_LIVE_REFERENCE_AEC
+        // Client-Referenz mit 2 Kanälen) – die Session kann sie nicht mehr ändern.
         const sessionPayload: Record<string, unknown> = {
+          type: "realtime",
           // instructions NICHT setzen – wird vom Foundry Agent geladen.
           // Voice, VAD, Noise Suppression etc. sind Session-Properties und
           // müssen immer explizit konfiguriert werden (kommen NICHT vom Agent).
-          modalities: ["text", "audio"],
-          voice: {
-            type: "azure-standard",
-            name: this.agentVoice,
-            temperature: 0.8,
-            rate: this.voiceSpeed,
-          },
+          output_modalities: ["text", "audio"],
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24000 },
 
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          input_audio_sampling_rate: 24000,
+              turn_detection: {
+                type: "azure_semantic_vad_multilingual",
+                threshold: this.vadThreshold,
+                prefix_padding_ms: 300,
+                silence_duration_ms: this.silenceDurationMs,
+                languages: [this.agentLanguage],
+                remove_filler_words: false,
+                interrupt_response: true,
+                auto_truncate: false,
+              },
 
-          turn_detection: {
-            type: "azure_semantic_vad_multilingual",
-            threshold: this.vadThreshold,
-            prefix_padding_ms: 300,
-            silence_duration_ms: this.silenceDurationMs,
-            languages: [this.agentLanguage],
-            remove_filler_words: false,
-            interrupt_response: true,
-            auto_truncate: false,
-          },
+              noise_reduction: {
+                type: "azure_deep_noise_suppression",
+              },
 
-          input_audio_noise_reduction: {
-            type: "azure_deep_noise_suppression",
-          },
+              // Live-Reference AEC: Der Client liefert das tatsächlich abgespielte
+              // Signal als zweiten Kanal mit, statt dass der Server sein eigenes
+              // gesendetes Audio als Referenz annimmt.
+              //
+              // Der Standardweg (reference_source "server") setzt voraus, dass der
+              // Client sofort abspielt – bei mehr als zwei Sekunden Verzögerung
+              // bricht die Entzerrung zusammen. Da die Wiedergabe hier auf einer
+              // Zeitleiste geplant wird und der Dienst schneller als Echtzeit
+              // streamt, ist genau das der Fall.
+              echo_cancellation: {
+                type: "server_echo_cancellation",
+                ...(VoiceLiveControl.USE_LIVE_REFERENCE_AEC
+                  ? { reference_source: "client", channels: 2 }
+                  : {}),
+              },
 
-          // Live-Reference AEC: Der Client liefert das tatsächlich abgespielte
-          // Signal als zweiten Kanal mit, statt dass der Server sein eigenes
-          // gesendetes Audio als Referenz annimmt.
-          //
-          // Der Standardweg (reference_source "server") setzt voraus, dass der
-          // Client sofort abspielt – bei mehr als zwei Sekunden Verzögerung
-          // bricht die Entzerrung zusammen. Da die Wiedergabe hier auf einer
-          // Zeitleiste geplant wird und der Dienst schneller als Echtzeit
-          // streamt, ist genau das der Fall.
-          input_audio_echo_cancellation: {
-            type: "server_echo_cancellation",
-            ...(VoiceLiveControl.USE_LIVE_REFERENCE_AEC
-              ? { reference_source: "client", channels: 2 }
-              : {}),
-          },
-
-          input_audio_transcription: {
-            model: "azure-speech",
-            language: this.agentLanguage,
+              transcription: {
+                model: "azure-speech",
+                language: this.agentLanguage,
+              },
+            },
+            output: {
+              format: { type: "audio/pcm", rate: 24000 },
+              voice: {
+                type: "azure-standard",
+                name: this.agentVoice,
+                temperature: 0.8,
+              },
+              speed: Number(this.voiceSpeed) || 1,
+            },
           },
         };
         // #endregion Session-Payload
@@ -1547,7 +1570,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       this.log(`startSession Fehler: ${msg}`);
 
-      this.setState("error", `Fehler: ${msg.slice(0, 80)}`);
+      this.setState("error", `Fehler: ${msg}`);
     }
   }
 
@@ -1743,6 +1766,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       case "response.mcp_call.completed":
         this.currentToolName = null;
+        this.mcpFollowUpPending = true;
         this.noteToolActivity();
         break;
 
@@ -1756,7 +1780,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // 2026-07-15) – dann läuft die Echounterdrückung ohne unsere Referenz
         // und KoRa fällt sich beim Sprechen selbst ins Wort.
         if (VoiceLiveControl.USE_LIVE_REFERENCE_AEC) {
-          const aec = msg.session?.input_audio_echo_cancellation;
+          const aec = msg.session?.audio?.input?.echo_cancellation;
 
           if (aec?.reference_source === "client") {
             this.log("Live-Reference AEC aktiv (Referenzkanal bestätigt)");
@@ -1777,11 +1801,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "response.content_part.added":
       case "response.content_part.done":
       case "input_audio_buffer.committed":
-      case "response.audio.done":
+      case "conversation.item.added":
+      case "response.output_audio.done":
         // Bekannte Events ohne spezielle Behandlung
         break;
 
-      case "response.audio.delta":
+      case "response.output_audio.delta":
         // Erster Audio-Chunk: Wechsel von "denkt nach" zu "spricht"
         if (this.controlState === "ai-thinking") {
           this.setState("ai-speaking");
@@ -1794,6 +1819,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.log("Server meldet response.done.");
         // Lock lösen
         this.isCancelling = false;
+
+        // Voice Agent: Nach einem MCP-Aufruf beginnt das Modell die Antwort darauf nicht
+        // von selbst (es bleibt bei "Einen Moment …"), sie muss angefordert werden.
+        if (this.mcpFollowUpPending) {
+          this.mcpFollowUpPending = false;
+          this.log("MCP-Ergebnis liegt vor, fordere Antwort an");
+          setTimeout(() => this.sendJson({ type: "response.create" }), 500);
+        }
         if (this.currentAiTranscript) {
           this.transcriptText += `[KI]: ${this.currentAiTranscript}\n`;
           const lastAi = this.chatMessages
@@ -1874,7 +1907,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         break;
 
       // KI-Transkript (Streaming)
-      case "response.audio_transcript.delta":
+      case "response.output_audio_transcript.delta":
         if (msg.delta) {
           this.currentAiTranscript += msg.delta;
           const lastAiDelta = this.chatMessages
@@ -1887,7 +1920,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         break;
 
-      case "response.audio_transcript.done":
+      case "response.output_audio_transcript.done":
         if (msg.transcript) {
           this.currentAiTranscript = msg.transcript;
           const lastAiDone = this.chatMessages
@@ -2438,20 +2471,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   // #region Steuerung & Abbau
 
   private toggleConnection(): void {
-    const isConfigured = !!(
-      this.agentId &&
-      this.agentProjectName &&
-      this.tokenEndpoint &&
-      this.proxyKey &&
-      this.agentendpoint
-    );
-
-    if (!isConfigured) {
-      this.log("FEHLER: Kann nicht verbinden, Konfiguration unvollständig.");
-
-      return;
-    }
-
     // Aus dem Ruhemodus heraus weckt der Button auf, statt zu trennen.
     if (this.controlState === "dormant") {
       this.log("Connect-Button: Beende Ruhemodus...");

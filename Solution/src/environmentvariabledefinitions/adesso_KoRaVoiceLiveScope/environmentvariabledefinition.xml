@@ -1,0 +1,15 @@
+<environmentvariabledefinition schemaname="adesso_KoRaVoiceLiveScope">
+  <description default="Scope der Backend-API, den der Connector anfordert, z. B. api://&lt;Client-ID der Backend-App&gt;/access_as_user.">
+    <label description="Scope der Backend-API, den der Connector anfordert, z. B. api://&lt;Client-ID der Backend-App&gt;/access_as_user." languagecode="1033" />
+    <label description="Scope der Backend-API, den der Connector anfordert, z. B. api://&lt;Client-ID der Backend-App&gt;/access_as_user." languagecode="1031" />
+  </description>
+  <displayname default="KoRa VoiceLive: Scope">
+    <label description="KoRa VoiceLive: Scope" languagecode="1033" />
+    <label description="KoRa VoiceLive: Scope" languagecode="1031" />
+  </displayname>
+  <introducedversion>1.43.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>1</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>

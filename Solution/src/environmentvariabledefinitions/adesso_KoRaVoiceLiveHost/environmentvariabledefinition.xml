@@ -1,0 +1,15 @@
+<environmentvariabledefinition schemaname="adesso_KoRaVoiceLiveHost">
+  <description default="Host der Function App mit dem VoiceLive-Backend, z. B. func-voicelive-kora.azurewebsites.net (ohne https://).">
+    <label description="Host der Function App mit dem VoiceLive-Backend, z. B. func-voicelive-kora.azurewebsites.net (ohne https://)." languagecode="1033" />
+    <label description="Host der Function App mit dem VoiceLive-Backend, z. B. func-voicelive-kora.azurewebsites.net (ohne https://)." languagecode="1031" />
+  </description>
+  <displayname default="KoRa VoiceLive: Host">
+    <label description="KoRa VoiceLive: Host" languagecode="1033" />
+    <label description="KoRa VoiceLive: Host" languagecode="1031" />
+  </displayname>
+  <introducedversion>1.41.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>1</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>
