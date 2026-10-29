@@ -1,0 +1,23 @@
+{
+  "token": {
+    "type": "oauthSetting",
+    "oAuthSettings": {
+      "identityProvider": "aad",
+      "clientId": "@environmentVariables(\"adesso_KoRaVoiceLiveClientId\")",
+      "clientSecret": "@environmentVariables(\"adesso_KoRaVoiceLiveClientSecret\")",
+      "scopes": ["@environmentVariables(\"adesso_KoRaVoiceLiveScope\")"],
+      "redirectMode": "GlobalPerConnector",
+      "properties": {
+        "IsFirstParty": "False",
+        "AzureActiveDirectoryResourceId": "@environmentVariables(\"adesso_KoRaVoiceLiveResourceUrl\")",
+        "IsOnbehalfofLoginSupported": true
+      },
+      "customParameters": {
+        "LoginUri": { "value": "https://login.microsoftonline.com" },
+        "TenantId": { "value": "@environmentVariables(\"adesso_KoRaVoiceLiveTenantId\")" },
+        "ResourceUri": { "value": "@environmentVariables(\"adesso_KoRaVoiceLiveResourceUrl\")" },
+        "EnableOnbehalfOfLogin": { "value": true }
+      }
+    }
+  }
+}

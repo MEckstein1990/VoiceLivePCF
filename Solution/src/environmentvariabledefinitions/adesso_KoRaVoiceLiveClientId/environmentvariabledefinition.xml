@@ -1,0 +1,15 @@
+<environmentvariabledefinition schemaname="adesso_KoRaVoiceLiveClientId">
+  <description default="Client-ID der App-Registrierung, über die sich der Connector anmeldet (OAuth-Client, nicht die Backend-API).">
+    <label description="Client-ID der App-Registrierung, über die sich der Connector anmeldet (OAuth-Client, nicht die Backend-API)." languagecode="1033" />
+    <label description="Client-ID der App-Registrierung, über die sich der Connector anmeldet (OAuth-Client, nicht die Backend-API)." languagecode="1031" />
+  </description>
+  <displayname default="KoRa VoiceLive: Client-ID">
+    <label description="KoRa VoiceLive: Client-ID" languagecode="1033" />
+    <label description="KoRa VoiceLive: Client-ID" languagecode="1031" />
+  </displayname>
+  <introducedversion>1.41.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>1</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>

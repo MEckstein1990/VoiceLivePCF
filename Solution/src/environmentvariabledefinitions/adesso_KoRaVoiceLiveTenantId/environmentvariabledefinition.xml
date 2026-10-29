@@ -1,0 +1,15 @@
+<environmentvariabledefinition schemaname="adesso_KoRaVoiceLiveTenantId">
+  <description default="Entra-Mandant (Tenant-ID), in dem sich die Nutzer anmelden.">
+    <label description="Entra-Mandant (Tenant-ID), in dem sich die Nutzer anmelden." languagecode="1033" />
+    <label description="Entra-Mandant (Tenant-ID), in dem sich die Nutzer anmelden." languagecode="1031" />
+  </description>
+  <displayname default="KoRa VoiceLive: Mandanten-ID">
+    <label description="KoRa VoiceLive: Mandanten-ID" languagecode="1033" />
+    <label description="KoRa VoiceLive: Mandanten-ID" languagecode="1031" />
+  </displayname>
+  <introducedversion>1.41.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>1</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>

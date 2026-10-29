@@ -8,7 +8,7 @@
       <LocalizedName description="Solution" languagecode="1033" />
     </LocalizedNames>
     <Descriptions />
-    <Version>1.38.0.0</Version>
+    <Version>1.45.0.0</Version>
     <!-- Solution Package Type: Unmanaged(0)/Managed(1)/Both(2)-->
     <Managed>2</Managed>
     <Publisher>
@@ -88,7 +88,9 @@
         </Address>
       </Addresses>
     </Publisher>
-    <RootComponents />
+    <RootComponents>
+      <RootComponent type="372" id="{66b9a4cf-6fb2-4653-a3e1-12a5892241ca}" schemaName="adesso_KoRaVoiceLive" behavior="0" />
+    </RootComponents>
     <MissingDependencies />
   </SolutionManifest>
 </ImportExportXml>

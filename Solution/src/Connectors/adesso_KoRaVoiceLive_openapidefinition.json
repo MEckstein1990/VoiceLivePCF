@@ -1,0 +1,103 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "KoRa VoiceLive",
+    "description": "Stellt Session-Tokens für das VoiceLive-Control aus. Das Entra-Token des angemeldeten Nutzers schickt der Connector selbst mit.",
+    "version": "1.0.0"
+  },
+  "host": "@environmentVariables(\"adesso_KoRaVoiceLiveHost\")",
+  "basePath": "/",
+  "schemes": [ "https" ],
+  "consumes": [ "application/json" ],
+  "produces": [ "application/json" ],
+  "securityDefinitions": {
+    "oauth2-auth": {
+      "type": "oauth2",
+      "flow": "accessCode",
+      "authorizationUrl": "https://login.windows.net/common/oauth2/authorize",
+      "tokenUrl": "https://login.windows.net/common/oauth2/authorize",
+      "scopes": {}
+    }
+  },
+  "security": [
+    { "oauth2-auth": [] }
+  ],
+  "paths": {
+    "/api/voice-live/token": {
+      "post": {
+        "operationId": "GetSessionToken",
+        "summary": "Verbindung für Sprachsitzung eröffnen",
+        "description": "Eröffnet mit Ihrer Anmeldung eine Verbindung zum KoRa-Sprachassistenten, damit Sie per Sprache mit KoRa arbeiten können.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": { "$ref": "#/definitions/SessionTokenRequest" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session-Token",
+            "schema": { "$ref": "#/definitions/SessionTokenResponse" }
+          },
+          "default": {
+            "description": "Fehler: 400 Angaben fehlen, 401 Entra-Token fehlt oder ist ungültig, 403 Ziel nicht freigegeben."
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "SessionTokenRequest": {
+      "type": "object",
+      "required": [ "AgentEndpoint", "AgentProjectName", "AgentId", "DataverseOrgUrl" ],
+      "properties": {
+        "AgentEndpoint": {
+          "type": "string",
+          "title": "Agent-Endpunkt",
+          "description": "Foundry-Endpunkt, z. B. https://<ressource>.services.ai.azure.com"
+        },
+        "AgentProjectName": {
+          "type": "string",
+          "title": "Projektname",
+          "description": "Foundry-Projekt des Agents, z. B. proj-default"
+        },
+        "AgentId": {
+          "type": "string",
+          "title": "Agent",
+          "description": "Name des Voice Agents"
+        },
+        "DataverseOrgUrl": {
+          "type": "string",
+          "title": "Dataverse-Org-URL",
+          "description": "z. B. https://<org>.crm4.dynamics.com"
+        }
+      }
+    },
+    "SessionTokenResponse": {
+      "type": "object",
+      "properties": {
+        "access_token": {
+          "type": "string",
+          "title": "Session-Token",
+          "description": "Token für wss://<Backend>/api/voice-live/ws?access_token=..."
+        },
+        "token_type": {
+          "type": "string",
+          "title": "Token-Typ"
+        },
+        "expires_in": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Gültigkeit in Sekunden"
+        },
+        "endpoint": {
+          "type": "string",
+          "title": "WebSocket-Endpunkt",
+          "description": "wss://<Backend>/api/voice-live/ws, an den das Control sich mit dem Token verbindet"
+        }
+      }
+    }
+  }
+}

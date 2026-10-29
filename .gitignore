@@ -23,3 +23,6 @@
 .DS_Store
 docs/
 docs/**
+
+# Lokale Zugangsdaten und Umgebungswerte (enthält das Client Secret)
+.env

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Alles außer dem Host: Dataverse-Zugriff, die Dienste hinter den Werkzeugen und die
+    Werkzeuge selbst (DataverseMcpTools). Woher Umgebung und Token kommen, entscheidet der Host
+    über die DataverseIdentity (VoiceLiveSessionApi/Dataverse), die er an AddDataverseClient
+    übergibt. Nur MCP-Core (Attribute) — Server und Transport bringt der Host mit.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+    <!-- Transitiv nur 10.0.10 (bekannte Sicherheitslücken), daher ausdrücklich angehoben. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageReference Include="Microsoft.PowerPlatform.Dataverse.Client" Version="1.2.27" />
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
+  </ItemGroup>
+
+</Project>

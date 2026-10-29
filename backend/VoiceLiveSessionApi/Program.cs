@@ -1,33 +1,27 @@
-﻿using System.Net;
-using Azure.AI.Agents.Persistent;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using VoiceLiveSessionApi;
+using VoiceLiveSessionApi.Agents;
+using VoiceLiveSessionApi.Dataverse;
+using VoiceLiveSessionApi.Session;
+using VoiceLiveSessionApi.VoiceLive;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWebApplication()
-    .ConfigureServices(services =>
+    .ConfigureAppConfiguration(config => config
+        .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: false)
+        // Danach erneut, damit App-Settings Werte aus der Datei überschreiben (z.B. Dataverse__ClientId).
+        .AddEnvironmentVariables())
+    .ConfigureServices((context, services) =>
     {
-        services.AddSingleton(_ => new HttpClient(new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All
-        }));
-        services.AddSingleton<TokenCredential>(_ => new DefaultAzureCredential());
-        services.AddSingleton(serviceProvider =>
-        {
-            var projectEndpoint = Environment.GetEnvironmentVariable("PROJECT_ENDPOINT")
-                ?? throw new InvalidOperationException("PROJECT_ENDPOINT missing");
-            return new PersistentAgentsClient(projectEndpoint, serviceProvider.GetRequiredService<TokenCredential>());
-        });
-        services.AddSingleton<DataverseTokenProvider>();
-        services.AddSingleton<UserSessionStore>();
-        services.AddSingleton<FoundryApprovalWatcherService>();
-        // WebSocket-Proxy als IStartupFilter: wird VOR dem Azure-Functions-Host registriert
-        // und kann WebSocket-Upgrades abfangen, bevor der Functions-Host sie verarbeitet.
-        services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter, VoiceLiveWsStartupFilter>();
+        var credential = new DefaultAzureCredential();
+        services.AddSingleton<TokenCredential>(credential);
+        services.AddSessionToken(context.Configuration, credential);
+        services.AddDataverse();
+        services.AddVoiceLive();
+        services.AddOptions<DeployAgentOptions>().BindConfiguration(DeployAgentOptions.SectionName);
     })
     .Build();
 
