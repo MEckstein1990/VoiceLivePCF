@@ -37,81 +37,53 @@
  * - **Bekanntes Problem (Android):** Lautstärketasten wirken nach der ersten
  *   Verbindung nicht mehr zuverlässig – Ursache, Lösungswege und Status stehen
  *   in `../docs/lautstaerke-routing-android.md`. Siehe auch das Flag
- *   `USE_LIVE_REFERENCE_AEC` weiter unten.
+ *   `USE_LIVE_REFERENCE_AEC` in `config.ts`.
  */
 
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 
-// #region Typen
-
-/**
- * Zustandsmodell des Controls – steuert UI-Darstellung und erlaubte Aktionen.
- *
- *   idle ──▶ connecting ──▶ listening ◀──▶ user-speaking
- *                         ▲      ▲                 │
- *                         │      └── ai-speaking◀─┘
- *                         │               │
- *                    Reconnecting◀───── error
- *
- *   dormant: Ruhemodus nach Inaktivität – Verbindung getrennt, Mikrofon aus,
- *            Gesprächsverlauf bleibt erhalten. Nur ein Klick weckt wieder auf.
- */
-
-type ControlState =
-  | "idle"
-  | "connecting"
-  | "reconnecting"
-  | "listening"
-  | "user-speaking"
-  | "ai-thinking"
-  | "ai-speaking"
-  | "dormant"
-  | "error";
-
-/**
- * Phasen des Ruhemodus-Ablaufs. Ein einzelnes Feld statt mehrerer Booleans,
- * damit keine inkonsistenten Kombinationen entstehen können.
- *
- *   none ──5 Min ohne Tool-Call──▶ warning ──Audio zu Ende──▶ pending-dormant
- *     ▲                                                              │
- *     └────────── Klick auf Connect ◀── dormant ◀────── Wartezeit ───┘
- */
-type DormancyPhase = "none" | "warning" | "pending-dormant" | "dormant";
-
-/** Wie eine Session gestartet wird – bestimmt UI-Text und Kontext-Injektion. */
-type SessionStartMode = "new" | "reconnect" | "wake";
-/** Typisierung für eingehende WebSocket-Nachrichten von Voice Live API. */
-
-interface ServerEvent {
-  type: string;
-  /** Base64-kodierter Audio-Chunk (nur bei `response.audio.delta`). */
-  delta?: string;
-  /** Transkript-Text (bei Transkriptions-Events). */
-  transcript?: string;
-  error?: { message: string };
-  warning?: { message: string };
-  /** MCP-Tool-Aufruf Item (bei response.output_item.added mit type=mcp_call). */
-  item?: {
-    type?: string;
-    name?: string;
-    server_label?: string;
-  };
-  /** Finale Tool-Argumente als JSON-String (bei response.mcp_call_arguments.done). */
-  arguments?: string;
-  /** Bestätigte Session-Konfiguration (bei session.updated). */
-  session?: {
-    audio?: { input?: { echo_cancellation?: { reference_source?: string } } };
-  };
-}
-
-/** Einzelne Chat-Nachricht für die visuelle Darstellung im Chat-Panel. */
-
-interface ChatMessage {
-  role: "user" | "ai";
-  text: string;
-}
-
-// #endregion
+import {
+  ChatMessage,
+  ControlState,
+  DormancyPhase,
+  ServerEvent,
+  SessionStartMode,
+} from "./types";
+import {
+  ControlConfig,
+  IDLE_CHECK_INTERVAL_MS,
+  INITIAL_CONFIG,
+  MAX_DEFER_MS,
+  MAX_RECONNECT_ATTEMPTS,
+  QUIET_GATE_MS,
+  TOKEN_WAIT_MS,
+  USE_LIVE_REFERENCE_AEC,
+  WARNING_WATCHDOG_MS,
+  readConfig,
+} from "./config";
+import {
+  DORMANT_CANCEL_PROMPT,
+  DORMANT_RESUME_PROMPT,
+  DORMANT_WARNING_PROMPT,
+  HISTORY_PREAMBLE_PROMPT,
+  RECONNECT_RESUME_PROMPT,
+  greetingPrompt,
+} from "./agent/prompts";
+import { getToolDisplayText } from "./agent/toolStatus";
+import {
+  VOICE_LIVE_SAMPLE_RATE,
+  base64Pcm16ToFloat32,
+  bufferToBase64,
+  float32ToPcm16,
+  interleave,
+  resample,
+} from "./audio/pcm";
+import { WORKLET_CODE } from "./audio/workletCode";
+import {
+  backoffDelay,
+  closeCodeToMessage,
+  isRecoverableClose,
+} from "./session/reconnect";
 
 export class VoiceLiveControl implements ComponentFramework.StandardControl<
   IInputs,
@@ -174,15 +146,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   /** Länge von chatMessages vor der Ruhemodus-Ansage – kürzt sie beim Wecken weg. */
   private chatLengthBeforeWarning: number | null = null;
 
-  /** Tick-Intervall der Inaktivitätsprüfung. */
-  private static readonly IDLE_CHECK_INTERVAL_MS = 10_000;
-  /** Mindestruhe im Gespräch, bevor die Ansage gesendet wird (verhindert Response-Kollision). */
-  private static readonly QUIET_GATE_MS = 3_000;
-  /** Nach dieser Zeit wird die Ansage trotz laufendem Gespräch erzwungen. */
-  private static readonly MAX_DEFER_MS = 60_000;
-  /** Not-Aus, falls die Ansage nie beantwortet wird. */
-  private static readonly WARNING_WATCHDOG_MS = 60_000;
-
   /** Während der Ruhemodus-Ansage darf der User die KI nicht unterbrechen. */
   private get isProtectedResponse(): boolean {
     return this.dormancyPhase !== "none" && this.dormancyPhase !== "dormant";
@@ -193,8 +156,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   // #region Reconnect (Zustand)
   private intentionalClose = false;
   private reconnectAttempt = 0;
-  private static readonly MAX_RECONNECT_ATTEMPTS = 5;
-  private static readonly RECONNECT_BASE_DELAY_MS = 1500;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   // #endregion
@@ -236,15 +197,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   // #endregion
 
   // #region Konfiguration (aus Power Apps Properties)
-  private agentVoice = "de-DE-Florian:DragonHDLatestNeural";
-  private silenceDurationMs = 2000;
-  private vadThreshold = 0.5;
-  private agentLanguage = "de";
-  private voiceSpeed = "1.0";
-  private userName = "";
-  private dormantEnabled = true;
-  private idleTimeoutMs = 5 * 60_000;
-  private dormantDelayMs = 5_000;
+  private config: ControlConfig = { ...INITIAL_CONFIG };
 
   // #endregion
 
@@ -259,148 +212,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private sessionProperties = "";
   private tokenWaiter: ((value: string) => void) | null = null;
   private events: ComponentFramework.Context<IInputs>["events"] | null = null;
-
-  // Reserve für eine App, die das Event gar nicht beantwortet. Fehler der App kommen sofort an.
-  // Großzügig, weil der erste Aufruf ein kaltes Backend treffen kann.
-  private static readonly TOKEN_WAIT_MS = 20_000;
-
-  // #endregion
-
-  // #region Defaults (werden durch Power Apps Properties überschrieben)
-  private static readonly DEFAULT_AGENT_VOICE =
-    "de-DE-Florian:DragonHDLatestNeural";
-  private static readonly DEFAULT_AGENT_LANGUAGE = "de";
-  private static readonly DEFAULT_SILENCE_DURATION = 2000;
-  private static readonly DEFAULT_VAD_THRESHOLD = 0.5;
-  private static readonly DEFAULT_VOICE_SPEED = "1.0";
-  private static readonly DEFAULT_USER_NAME = "";
-  private static readonly DEFAULT_IDLE_TIMEOUT_MINUTES = 5;
-  private static readonly DEFAULT_DORMANT_DELAY_SECONDS = 5;
-
-  // #endregion
-
-  // #region System-Hinweise an den Agenten
-  //
-  // Anweisungen, WIE die KI etwas sagen soll – nicht der wörtlich gesprochene
-  // Text. Sie formuliert daraus jedes Mal selbst und passt sich dem Gespräch an.
-  // Bewusst hier statt als Manifest-Properties: Sie werden selten angefasst und
-  // hätten das Property-Pane nur zugestellt.
-
-  /**
-   * Ansage vor dem Ruhemodus. Der Zusatz "keine Tools" ist wichtig: Ein
-   * Tool-Aufruf als Reaktion würde die Inaktivitätsmessung zurücksetzen und
-   * den Ablauf mitten in der geschützten Phase abbrechen.
-   */
-  private static readonly DORMANT_WARNING_PROMPT =
-    "[SYSTEM-HINWEIS] Es gab länger keine Aktivität. Sage dem Benutzer in EINEM kurzen Satz, " +
-    "dass du jetzt in den Ruhemodus gehst und er dich jederzeit wieder antippen kann, um " +
-    "weiterzumachen. Stelle KEINE Rückfrage und rufe KEINE Tools auf.";
-
-  /**
-   * Bestätigung, wenn der Benutzer den Ruhemodus durch Tippen abbricht.
-   * Der Tool-Hinweis aus demselben Grund wie oben.
-   */
-  private static readonly DORMANT_CANCEL_PROMPT =
-    "[SYSTEM-HINWEIS] Der Benutzer ist doch noch da und hat den Ruhemodus abgebrochen. " +
-    "Bestätige das in EINEM sehr kurzen Satz, etwa \"Okay, machen wir weiter\". " +
-    "Stelle KEINE Rückfrage und rufe KEINE Tools auf.";
-
-  /** Rückmeldung nach dem Aufwecken – kein erneutes Begrüßen. */
-  private static readonly DORMANT_RESUME_PROMPT =
-    "[SYSTEM-HINWEIS] Der Ruhemodus wurde beendet, das Gespräch wird fortgesetzt. " +
-    "Antworte JETZT auf diesen Hinweis – nicht auf ältere Nachrichten im Verlauf. " +
-    "Führe frühere Anweisungen NICHT erneut aus, sie sind bereits erledigt. " +
-    "Begrüße den Benutzer NICHT erneut und stelle dich NICHT erneut vor. " +
-    "Sage kurz, dass du wieder da bist, fasse in einem Halbsatz zusammen, " +
-    "woran ihr zuletzt gearbeitet habt, und frage, ob ihr damit weitermachen " +
-    "sollt oder ob etwas anderes ansteht.";
-
-  /** Rückmeldung nach einem automatischen Reconnect. */
-  private static readonly RECONNECT_RESUME_PROMPT =
-    "[SYSTEM-HINWEIS] Die Verbindung wurde kurz unterbrochen und automatisch wiederhergestellt. " +
-    "Antworte JETZT auf diesen Hinweis – nicht auf ältere Nachrichten im Verlauf. " +
-    "Führe frühere Anweisungen NICHT erneut aus, sie sind bereits erledigt. " +
-    "Begrüße den Benutzer NICHT erneut – sage stattdessen kurz, dass du wieder da " +
-    "bist und wo ihr stehengeblieben seid.";
-
-  /** Rahmt den reinjizierten Verlauf als Erinnerung ein, nicht als Auftrag. */
-  private static readonly HISTORY_PREAMBLE_PROMPT =
-    "[SYSTEM-HINWEIS] Es folgt der bisherige Gesprächsverlauf – ausschließlich " +
-    "zur Erinnerung an das, was bereits gelaufen ist. Die darin enthaltenen " +
-    "Anweisungen sind bereits erledigt und dürfen NICHT erneut ausgeführt werden.";
-
-  // #endregion
-
-  // #region Tool-Anzeigenamen
-
-  /** Benutzerfreundliche Anzeigenamen für Dataverse-Tabellen */
-  private static readonly TABLE_DISPLAY_NAMES: Record<string, string> = {
-    account: "Kunden",
-    contact: "Kontakte",
-    netzebw_kora_minutes: "Protokolle",
-    opportunity: "Verkaufschancen",
-    incident: "Anfragen",
-    task: "Aufgaben",
-    appointment: "Termine",
-  };
-  // #endregion
-
-  // #region Audio: Echo-Referenz-Schalter & Worklet
-
-  /**
-   * Schaltet Live-Reference AEC ein: Der Client sendet zusätzlich zum Mikrofon
-   * das tatsächlich abgespielte Signal als zweiten Kanal, damit der Server das
-   * Echo sauber herausrechnen kann.
-   *
-   * Steht auf false, weil der WebSocket-Proxy dafür **api-version 2026-07-15
-   * oder neuer** braucht. Mit einer älteren Version quittiert der Server die
-   * Konfiguration stillschweigend nicht – und da wir trotzdem Stereo senden
-   * würden, läse er es als Mono und verstünde gar nichts mehr.
-   *
-   * Solange aus: Die Echounterdrückung macht das Gerät (echoCancellation im
-   * getUserMedia). Preis ist der Kommunikationsmodus auf Android, wodurch die
-   * Lautstärketasten auf den Anruf-Stream zeigen, die Wiedergabe aber auf
-   * Musik landet – die Tasten greifen dann ab der zweiten Verbindung nicht.
-   *
-   * Umlegen, sobald der Proxy aktualisiert ist. Ob es greift, meldet der
-   * session.updated-Handler im Log.
-   */
-  private static readonly USE_LIVE_REFERENCE_AEC = false;
-
-  /**
-   * Worklet-Code als Vanilla JS (kein TS!) – wird als Blob geladen, das löst
-   * die PCF-Pfad-Probleme.
-   *
-   * Zwei Eingänge: 0 ist das Mikrofon, 1 die Echo-Referenz (das, was gerade
-   * über die Lautsprecher läuft). Beide werden im selben Render-Quantum
-   * abgegriffen und sind dadurch sample-genau zueinander ausgerichtet – das
-   * ist die Voraussetzung für die serverseitige Echounterdrückung.
-   */
-  private static readonly WORKLET_CODE = `
-    class Processor extends AudioWorkletProcessor {
-      process(inputs, outputs, parameters) {
-        const mic = inputs[0]?.[0];
-        if (mic) {
-          const reference = inputs[1]?.[0];
-
-          // WICHTIG: Float32Arrays kopieren, bevor sie an den Main-Thread
-          // gehen! Der Browser leert die Puffer sonst sofort wieder.
-          //
-          // Spielt gerade nichts, liefert der Browser keinen zweiten Eingang.
-          // Dann Stille gleicher Länge senden – der Referenzkanal darf nie
-          // fehlen, sonst verrutscht die Zuordnung der Sample-Paare.
-          this.port.postMessage({
-            mic: new Float32Array(mic),
-            reference: reference
-              ? new Float32Array(reference)
-              : new Float32Array(mic.length),
-          });
-        }
-        return true;
-      }
-    }
-    registerProcessor("processor", Processor);
-  `;
 
   // #endregion
 
@@ -589,22 +400,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   public updateView(context: ComponentFramework.Context<IInputs>): void {
-    // PCF-Testharnisch liefert "val" als Platzhalter für alle Properties –
-    // in diesem Fall greifen die eingebauten Defaults.
-    const prop = (raw: string | null | undefined, def: string): string =>
-      raw && raw !== "val" && raw !== "undefined" ? raw : def;
-    this.agentVoice = prop(
-      context.parameters.AgentVoice.raw,
-      VoiceLiveControl.DEFAULT_AGENT_VOICE,
-    );
-    this.agentLanguage = prop(
-      context.parameters.AgentLanguage.raw,
-      VoiceLiveControl.DEFAULT_AGENT_LANGUAGE,
-    );
-    this.voiceSpeed = prop(
-      context.parameters.VoiceSpeed.raw,
-      VoiceLiveControl.DEFAULT_VOICE_SPEED,
-    );
+    // Ruhemodus: alten Wert merken – für den Kill-Switch weiter unten.
+    const dormantWasEnabled = this.config.dormantEnabled;
+    this.config = readConfig(context.parameters);
+
     // Session-Properties aus der App: Ein neuer Wert beantwortet die offene Anforderung
     // (siehe requestSessionToken). Ohne offene Anforderung wird er nur gemerkt.
     this.events = context.events;
@@ -615,44 +414,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.tokenWaiter = null;
       waiter?.(incoming);
     }
-    this.silenceDurationMs =
-      typeof context.parameters.SilenceDurationMs.raw === "number"
-        ? context.parameters.SilenceDurationMs.raw
-        : VoiceLiveControl.DEFAULT_SILENCE_DURATION;
-    this.vadThreshold =
-      typeof context.parameters.VadThreshold.raw === "number"
-        ? context.parameters.VadThreshold.raw
-        : VoiceLiveControl.DEFAULT_VAD_THRESHOLD;
-
-    // Ruhemodus – TwoOptions hier bewusst mit !== false statt === true:
-    // Im Testharnisch ist raw null, das würde den Default true aushebeln.
-    const dormantWasEnabled = this.dormantEnabled;
-    this.dormantEnabled = context.parameters.DormantEnabled.raw !== false;
-
-    // Clamp auf >= 1: Ein Maker mit 0 würde sonst eine Ansage-Endlosschleife erzeugen.
-    const idleMinutes =
-      typeof context.parameters.IdleTimeoutMinutes.raw === "number" &&
-      context.parameters.IdleTimeoutMinutes.raw > 0
-        ? context.parameters.IdleTimeoutMinutes.raw
-        : VoiceLiveControl.DEFAULT_IDLE_TIMEOUT_MINUTES;
-    this.idleTimeoutMs = Math.max(1, idleMinutes) * 60_000;
-
-    const dormantSeconds =
-      typeof context.parameters.DormantDelaySeconds.raw === "number" &&
-      context.parameters.DormantDelaySeconds.raw > 0
-        ? context.parameters.DormantDelaySeconds.raw
-        : VoiceLiveControl.DEFAULT_DORMANT_DELAY_SECONDS;
-    this.dormantDelayMs = Math.max(1, dormantSeconds) * 1000;
 
     // Kill-Switch während einer laufenden Ansage: Ablauf sofort abbrechen.
-    if (dormantWasEnabled && !this.dormantEnabled) {
+    if (dormantWasEnabled && !this.config.dormantEnabled) {
       this.log("Ruhemodus deaktiviert – laufender Ablauf wird abgebrochen");
       this.abortDormancy();
     }
-    this.userName = prop(
-      context.parameters.UserName.raw,
-      VoiceLiveControl.DEFAULT_USER_NAME,
-    );
 
     if (!this.loggedInit) {
       this.loggedInit = true;
@@ -730,7 +497,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       connecting: { text: "Verbinde\u2026", header: "Verbinde\u2026" },
 
       reconnecting: {
-        text: `Verbindung wiederherstellen (${this.reconnectAttempt}/${VoiceLiveControl.MAX_RECONNECT_ATTEMPTS})\u2026`,
+        text: `Verbindung wiederherstellen (${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})\u2026`,
         header: "Verbindung unterbrochen",
       },
 
@@ -798,49 +565,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.notifyOutputChanged();
   }
 
-  /** Erzeugt benutzerfreundlichen Status-Text für einen MCP-Tool-Aufruf */
-  private getToolDisplayText(toolName: string, args?: string): string {
-    try {
-      const parsed = args ? JSON.parse(args) : null;
-
-      if (toolName === "read_query" && parsed?.querytext) {
-        const match = parsed.querytext.match(/FROM\s+(\w+)/i);
-        const table = match?.[1];
-        const displayName = table
-          ? VoiceLiveControl.TABLE_DISPLAY_NAMES[table] || table
-          : "Daten";
-        return `Durchsuche ${displayName}\u2026`;
-      }
-
-      if (toolName === "create_record" && parsed?.tablename) {
-        const displayName =
-          VoiceLiveControl.TABLE_DISPLAY_NAMES[parsed.tablename] || parsed.tablename;
-        return `Speichere ${displayName}\u2026`;
-      }
-
-      if (toolName === "update_record") {
-        return "Aktualisiere Daten\u2026";
-      }
-
-      if (toolName === "delete_record") {
-        return "L\u00f6sche Eintrag\u2026";
-      }
-    } catch {
-      // JSON-Parse fehlgeschlagen – Fallback
-    }
-
-    if (toolName.startsWith("read") || toolName.startsWith("search") || toolName.startsWith("list")) {
-      return "Durchsuche Daten\u2026";
-    }
-    if (toolName.startsWith("create") || toolName.startsWith("save") || toolName.startsWith("write")) {
-      return "Speichere Daten\u2026";
-    }
-    return "Verarbeite Anfrage\u2026";
-  }
-
   /** Setzt den Status-Text f\u00fcr einen aktiven Tool-Aufruf (ohne State-Wechsel) */
   private setToolStatus(toolName: string, args?: string): void {
-    const text = this.getToolDisplayText(toolName, args);
+    const text = getToolDisplayText(toolName, args);
     if (this.statusTextEl && (this.controlState === "ai-thinking" || this.controlState === "ai-speaking")) {
       this.statusTextEl.textContent = text;
     }
@@ -890,7 +617,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     this.idleCheckTimer = setInterval(
       () => this.onIdleTick(),
-      VoiceLiveControl.IDLE_CHECK_INTERVAL_MS,
+      IDLE_CHECK_INTERVAL_MS,
     );
   }
 
@@ -904,24 +631,24 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * Nebeneffekt: Der Zeitstempel übersteht auch einen Verbindungsabbruch.
    */
   private onIdleTick(): void {
-    if (!this.dormantEnabled) return;
+    if (!this.config.dormantEnabled) return;
     if (this.dormancyPhase !== "none") return;
     if (this.controlState !== "listening") return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     if (this.isCancelling) return;
 
-    if (Date.now() - this.lastToolCallAt < this.idleTimeoutMs) return;
+    if (Date.now() - this.lastToolCallAt < this.config.idleTimeoutMs) return;
 
     // Quiet-Gate: speech_stopped setzt sofort "listening", response.created
     // folgt erst einige hundert ms später. Eine Ansage in dieses Fenster
     // würde als zweite Response kollidieren (conversation_already_has_active_response).
     const quietFor = Date.now() - this.lastConversationAt;
-    if (quietFor < VoiceLiveControl.QUIET_GATE_MS) {
+    if (quietFor < QUIET_GATE_MS) {
       if (this.deferredSince === null) {
         this.deferredSince = Date.now();
         this.log("Ruhemodus-Ansage aufgeschoben – Gespräch noch aktiv");
       } else if (
-        Date.now() - this.deferredSince >= VoiceLiveControl.MAX_DEFER_MS
+        Date.now() - this.deferredSince >= MAX_DEFER_MS
       ) {
         this.log("Ruhemodus-Ansage wird trotz Aktivität erzwungen");
         this.triggerDormancyWarning();
@@ -954,7 +681,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         content: [
           {
             type: "input_text",
-            text: VoiceLiveControl.DORMANT_WARNING_PROMPT,
+            text: DORMANT_WARNING_PROMPT,
           },
         ],
       },
@@ -966,7 +693,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.warningWatchdogTimer = null;
       this.log("Watchdog: Ansage blieb aus – gehe trotzdem in den Ruhemodus");
       this.enterDormantMode();
-    }, VoiceLiveControl.WARNING_WATCHDOG_MS);
+    }, WARNING_WATCHDOG_MS);
   }
 
   /**
@@ -987,7 +714,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       ? Math.max(0, this.nextPlayTime - this.audioContext.currentTime) * 1000
       : 0;
 
-    const deadline = remainingPlaybackMs + this.dormantDelayMs + 2000;
+    const deadline = remainingPlaybackMs + this.config.dormantDelayMs + 2000;
 
     this.warningWatchdogTimer = setTimeout(() => {
       this.warningWatchdogTimer = null;
@@ -1022,7 +749,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       clearInterval(this.dormantCountdownTimer);
     }
 
-    let remaining = Math.round(this.dormantDelayMs / 1000);
+    let remaining = Math.round(this.config.dormantDelayMs / 1000);
     this.log(`Ansage beendet – Ruhemodus in ${remaining}s`);
 
     // Erste Anzeige sofort, nicht erst nach der ersten Sekunde – sonst bliebe
@@ -1174,7 +901,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         content: [
           {
             type: "input_text",
-            text: VoiceLiveControl.DORMANT_CANCEL_PROMPT,
+            text: DORMANT_CANCEL_PROMPT,
           },
         ],
       },
@@ -1235,7 +962,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           content: [
             {
               type: "input_text",
-              text: VoiceLiveControl.HISTORY_PREAMBLE_PROMPT,
+              text: HISTORY_PREAMBLE_PROMPT,
             },
           ],
         },
@@ -1320,7 +1047,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
             "Die App hat kein Session-Token geliefert (ist OnTokenNeeded belegt?)",
           ),
         );
-      }, VoiceLiveControl.TOKEN_WAIT_MS);
+      }, TOKEN_WAIT_MS);
 
       this.tokenWaiter = (value: string) => {
         clearTimeout(timer);
@@ -1441,10 +1168,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
               turn_detection: {
                 type: "azure_semantic_vad_multilingual",
-                threshold: this.vadThreshold,
+                threshold: this.config.vadThreshold,
                 prefix_padding_ms: 300,
-                silence_duration_ms: this.silenceDurationMs,
-                languages: [this.agentLanguage],
+                silence_duration_ms: this.config.silenceDurationMs,
+                languages: [this.config.agentLanguage],
                 remove_filler_words: false,
                 interrupt_response: true,
                 auto_truncate: false,
@@ -1465,24 +1192,24 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
               // streamt, ist genau das der Fall.
               echo_cancellation: {
                 type: "server_echo_cancellation",
-                ...(VoiceLiveControl.USE_LIVE_REFERENCE_AEC
+                ...(USE_LIVE_REFERENCE_AEC
                   ? { reference_source: "client", channels: 2 }
                   : {}),
               },
 
               transcription: {
                 model: "azure-speech",
-                language: this.agentLanguage,
+                language: this.config.agentLanguage,
               },
             },
             output: {
               format: { type: "audio/pcm", rate: 24000 },
               voice: {
                 type: "azure-standard",
-                name: this.agentVoice,
+                name: this.config.agentVoice,
                 temperature: 0.8,
               },
-              speed: Number(this.voiceSpeed) || 1,
+              speed: Number(this.config.voiceSpeed) || 1,
             },
           },
         };
@@ -1498,8 +1225,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         if (keepsContext) {
           this.injectConversationHistory(
             mode === "wake"
-              ? VoiceLiveControl.DORMANT_RESUME_PROMPT
-              : VoiceLiveControl.RECONNECT_RESUME_PROMPT,
+              ? DORMANT_RESUME_PROMPT
+              : RECONNECT_RESUME_PROMPT,
           );
 
           // Beide Hinweistexte fordern eine kurze Rückmeldung – ausgelöst wird
@@ -1539,18 +1266,18 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         const wasActive =
           this.controlState !== "idle" && this.controlState !== "error";
 
-        const reason = this.closeCodeToMessage(event.code, event.reason);
+        const reason = closeCodeToMessage(event.code, event.reason);
 
         // Reconnect bei unerwartetem Verbindungsabbruch (Netzwerkfehler o.ä.).
         // Der Ausnahmefall – die Session läuft sonst unbegrenzt, das Backend
         // hält sie offen.
 
-        const isRecoverable =
-          !this.intentionalClose &&
-          wasActive &&
-          event.code !== 1008 && // Policy violation (Auth-Fehler)
-          event.code !== 1007 && // Invalid payload / Agent not found
-          this.reconnectAttempt < VoiceLiveControl.MAX_RECONNECT_ATTEMPTS;
+        const isRecoverable = isRecoverableClose({
+          intentionalClose: this.intentionalClose,
+          wasActive,
+          code: event.code,
+          attempt: this.reconnectAttempt,
+        });
 
         this.cleanupConnection(); // WS + Audio aufräumen, Chat behalten
 
@@ -1578,14 +1305,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private attemptReconnect(): void {
     this.reconnectAttempt++;
 
-    const delay =
-      VoiceLiveControl.RECONNECT_BASE_DELAY_MS *
-      Math.pow(2, this.reconnectAttempt - 1);
+    const delay = backoffDelay(this.reconnectAttempt);
 
     this.setState("reconnecting");
 
     this.log(
-      `Reconnect ${this.reconnectAttempt}/${VoiceLiveControl.MAX_RECONNECT_ATTEMPTS} in ${delay}ms...`,
+      `Reconnect ${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms...`,
     );
 
     this.reconnectTimer = setTimeout(() => {
@@ -1593,22 +1318,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       void this.startSession("reconnect");
     }, delay);
-  }
-
-  private closeCodeToMessage(code: number, reason: string): string {
-    const map: Record<number, string> = {
-      1006: "Keine Verbindung \u2013 Endpoint-URL pr\u00fcfen",
-      1007: "Agent nicht gefunden oder fehlerhafte Anfrage",
-      1008: "Richtlinienversto\u00df \u2013 API-Key oder Berechtigungen pr\u00fcfen",
-      1011: "Interner Serverfehler",
-    };
-
-    return (
-      map[code] ??
-      (reason
-        ? `Fehler ${code}: ${reason}`
-        : `Verbindung getrennt (Code ${code})`)
-    );
   }
 
   // #endregion
@@ -1634,9 +1343,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "session.created":
         this.log("Session erfolgreich konfiguriert");
         if (!this.greetingSent) {
-          const greetingText = this.userName
-            ? `[SYSTEM-HINWEIS] Begrüße den Benutzer "${this.userName}" persönlich mit Vornamen. Stelle dich als Kora vor. Vermeide es "EnBW" zu erwähnen.`
-            : "[SYSTEM-HINWEIS] Begrüße den Benutzer kurz und freundlich. Stelle dich als Kora vor. Vermeide es \"EnBW\" zu erwähnen.";
+          const greetingText = greetingPrompt(this.config.userName);
           this.sendJson({
             type: "conversation.item.create",
             item: {
@@ -1779,7 +1486,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // der Antwort, ist die API-Version des Proxys zu alt (nötig ab
         // 2026-07-15) – dann läuft die Echounterdrückung ohne unsere Referenz
         // und KoRa fällt sich beim Sprechen selbst ins Wort.
-        if (VoiceLiveControl.USE_LIVE_REFERENCE_AEC) {
+        if (USE_LIVE_REFERENCE_AEC) {
           const aec = msg.session?.audio?.input?.echo_cancellation;
 
           if (aec?.reference_source === "client") {
@@ -1997,7 +1704,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       this.audioContext = new Ctx();
 
-      const blob = new Blob([VoiceLiveControl.WORKLET_CODE], {
+      const blob = new Blob([WORKLET_CODE], {
         type: "application/javascript",
       });
       const workletUrl = URL.createObjectURL(blob);
@@ -2028,35 +1735,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   /**
-   * Verschränkt Mikrofon und Echo-Referenz zu Stereo für die serverseitige
-   * Echounterdrückung: [mic0, ref0, mic1, ref1, …].
-   *
-   * Die Reihenfolge ist von der Voice Live API vorgegeben – pro Sample-Paar
-   * zuerst das Mikrofon, dann die Referenz. Kanal 1 wird auf die Länge von
-   * Kanal 0 gezwungen, damit die Paare auch dann stimmen, wenn beide Puffer
-   * durch das Resampling um ein Sample auseinanderlaufen.
-   */
-  private interleave(mic: Float32Array, reference: Float32Array): Float32Array {
-    const out = new Float32Array(mic.length * 2);
-
-    for (let i = 0; i < mic.length; i++) {
-      out[i * 2] = mic[i];
-      out[i * 2 + 1] = i < reference.length ? reference[i] : 0;
-    }
-
-    return out;
-  }
-
-  /** Nearest-Neighbor-Resampling auf 24 kHz – kein Anti-Aliasing-Filter. */
-  private resample(input: Float32Array, fromRate: number): Float32Array {
-    if (fromRate === 24000) return input;
-    const ratio = fromRate / 24000;
-    const out = new Float32Array(Math.floor(input.length / ratio));
-    for (let i = 0; i < out.length; i++) out[i] = input[Math.floor(i * ratio)];
-    return out;
-  }
-
-  /**
    * Mikrofon-Aufnahme starten und Audio-Pipeline aufbauen.
    *
    * Pipeline:
@@ -2081,7 +1759,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // keines von beiden ließe KoRa sich selbst ins Wort fallen.
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: !VoiceLiveControl.USE_LIVE_REFERENCE_AEC,
+          echoCancellation: !USE_LIVE_REFERENCE_AEC,
         },
         video: false,
       });
@@ -2131,13 +1809,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // Ohne Live-Reference AEC erwartet der Server Mono. Stereo zu senden
         // läse er als Mono und verstünde nichts mehr – der Referenzkanal
         // bleibt dann also weg.
-        const micResampled = this.resample(mic, nativeRate);
-        const payload = VoiceLiveControl.USE_LIVE_REFERENCE_AEC
-          ? this.interleave(micResampled, this.resample(reference, nativeRate))
+        const micResampled = resample(mic, nativeRate);
+        const payload = USE_LIVE_REFERENCE_AEC
+          ? interleave(micResampled, resample(reference, nativeRate))
           : micResampled;
 
-        const pcm16 = this.float32ToPcm16(payload);
-        const base64 = this.bufferToBase64(pcm16.buffer as ArrayBuffer);
+        const pcm16 = float32ToPcm16(payload);
+        const base64 = bufferToBase64(pcm16.buffer as ArrayBuffer);
 
         this.sendJson({ type: "input_audio_buffer.append", audio: base64 });
       };
@@ -2221,20 +1899,12 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private playAudioDelta(base64: string): void {
     if (!this.audioContext) return;
 
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-    const pcm16 = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(pcm16.length);
-
-    for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
+    const float32 = base64Pcm16ToFloat32(base64);
 
     const audioBuffer = this.audioContext.createBuffer(
       1,
       float32.length,
-      24000,
+      VOICE_LIVE_SAMPLE_RATE,
     );
 
     audioBuffer.getChannelData(0).set(float32);
@@ -2271,28 +1941,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     this.activeSources.push(source);
     this.nextPlayTime = startAt + audioBuffer.duration;
-  }
-
-  private float32ToPcm16(input: Float32Array): Int16Array {
-    const output = new Int16Array(input.length);
-
-    for (let i = 0; i < input.length; i++) {
-      const s = Math.max(-1, Math.min(1, input[i]));
-
-      output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-
-    return output;
-  }
-
-  private bufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-
-    let binary = "";
-
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-
-    return btoa(binary);
   }
 
   private sendJson(obj: unknown): void {

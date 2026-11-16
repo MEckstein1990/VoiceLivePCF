@@ -10,7 +10,8 @@
     "rebuild": "pcf-scripts rebuild",
     "start": "pcf-scripts start",
     "start:watch": "pcf-scripts start watch",
-    "refreshTypes": "pcf-scripts refreshTypes"
+    "refreshTypes": "pcf-scripts refreshTypes",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.1",
@@ -23,6 +24,7 @@
     "pcf-scripts": "^1",
     "pcf-start": "^1",
     "typescript": "^5.8.3",
-    "typescript-eslint": "8.44.0"
+    "typescript-eslint": "8.44.0",
+    "vitest": "^3.2.7"
   }
 }
