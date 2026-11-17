@@ -43,7 +43,6 @@
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 
 import {
-  ChatMessage,
   ControlState,
   DormancyPhase,
   ServerEvent,
@@ -84,6 +83,11 @@ import {
   isRecoverableClose,
 } from "./session/reconnect";
 import { SessionTokenRequester } from "./session/sessionToken";
+import { Conversation } from "./conversation/Conversation";
+import { ChatView } from "./ui/ChatView";
+import { EventLog } from "./ui/EventLog";
+import { describeState } from "./ui/statusView";
+import { renderTemplate } from "./ui/template";
 
 export class VoiceLiveControl implements ComponentFramework.StandardControl<
   IInputs,
@@ -143,7 +147,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private dormantCountdownTimer: ReturnType<typeof setInterval> | null = null;
   /** Löst nach dem Wiederverbinden eine kurze Rückmeldung der KI aus. */
   private pendingResumeResponse = false;
-  /** Länge von chatMessages vor der Ruhemodus-Ansage – kürzt sie beim Wecken weg. */
+  /** Länge des Gesprächsverlaufs vor der Ruhemodus-Ansage – kürzt sie beim Wecken weg. */
   private chatLengthBeforeWarning: number | null = null;
 
   /** Während der Ruhemodus-Ansage darf der User die KI nicht unterbrechen. */
@@ -160,38 +164,15 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region Transkript
-  private transcriptText = "";
-  private eventLogText = "";
-  private currentAiTranscript = "";
-  private currentUserTranscript = "";
+  // #region Gespräch & Chat (siehe conversation/Conversation.ts, ui/ChatView.ts)
+  /** Chat-Verlauf und Transkript – wird in renderUI() angelegt. */
+  private conversation!: Conversation<HTMLDivElement>;
+  private chatView!: ChatView;
 
   // #endregion
 
-  // #region Chat-UI (Zustand)
-  private chatMessages: ChatMessage[] = [];
-  private chatOpen = false;
-  /** Folgt der Chat dem Verlauf? Pausiert, sobald der Nutzer hochscrollt. */
-  private chatAutoScroll = true;
-  /** Trennt eigene Scroll-Aufrufe von echten Nutzergesten. */
-  private isProgrammaticScroll = false;
-
-  /**
-   * Abstand zum Ende, ab dem der Nutzer noch als "liest mit" gilt.
-   *
-   * Misst bewusst NICHT das Wachstum des Inhalts – genau daran ist die
-   * frühere Heuristik gescheitert, als die Bubbles größer wurden als ihr
-   * Schwellwert. Hier geht es nur um die Ruheposition des Nutzers, der Wert
-   * ist damit unabhängig von Schriftgröße und Bubble-Höhe.
-   */
-  private static readonly CHAT_BOTTOM_THRESHOLD_PX = 48;
-  // #endregion
-
-  // #region Event-Log (Felder)
-  // UI-Panel dafür ist im Markup auskommentiert (siehe renderUI) – eventLogEl
-  // bleibt entsprechend ungesetzt, der DOM-Zweig in log() bleibt inaktiv.
-  private eventLogEntries: string[] = [];
-  private eventLogEl!: HTMLDivElement;
+  // #region Event-Log (siehe ui/EventLog.ts)
+  private eventLog = new EventLog();
   private loggedInit = false;
 
   // #endregion
@@ -212,13 +193,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private statusTextEl!: HTMLParagraphElement;
   private statusHeaderEl!: HTMLSpanElement;
   private vuBars!: HTMLDivElement[];
-  private chatToggleBtn!: HTMLButtonElement;
-  private chatPanel!: HTMLDivElement;
-  private chatMessagesEl!: HTMLDivElement;
   private muteBtn!: HTMLButtonElement;
   private connectBtn!: HTMLButtonElement;
-  private lastAiBubbleEl: HTMLDivElement | null = null;
-  private lastUserBubbleEl: HTMLDivElement | null = null;
 
   // #endregion
 
@@ -243,140 +219,23 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   }
 
   private renderUI(): void {
-    this.container.innerHTML = `
-            <div class="ai-voice-header">
-                <div class="ai-voice-status-label">
-                    <span class="ai-voice-status-dot"></span>
-                    <span class="ai-voice-status-header">Nicht verbunden</span>
-                </div>
-                <div style="display:flex;gap:6px">
-                  <button class="ai-chat-toggle" title="Chat-Transkript anzeigen">
-                    <!-- Zustand: Chat OFFEN → normale Sprechblase -->
-                    <svg class="icon-chat-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                    </svg>
-                    <!-- Zustand: Chat GESCHLOSSEN → durchgestrichene Sprechblase -->
-                    <svg class="icon-chat-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                        <line x1="3" y1="3" x2="21" y2="21"/>
-                    </svg>
-                  </button>                    
-                </div>
-            </div>
-            <div class="ai-voice-orb-area">
-                <div class="ai-voice-orb-wrapper">
-                    <div class="ai-voice-ring ai-voice-ring-1"></div>
-                    <div class="ai-voice-ring ai-voice-ring-2"></div>
-                    <div class="ai-voice-ring ai-voice-ring-3"></div>
-                    <div class="ai-voice-orb">
-                      <!--
-                      <svg class="ai-voice-orb-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3zm-1 14.93V19H9v2h6v-2h-2v-2.07A7.001 7.001 0 0 0 19 11h-2a5 5 0 0 1-10 0H5a7.001 7.001 0 0 0 6 6.93z"/>
-                      </svg>
-                      -->
-                    </div>
-                </div>
-                <p class="ai-voice-status-text">Inaktiv</p>
-                <p class="ai-voice-dormant-hint">Tippen zum Fortsetzen</p>
-                <div class="ai-voice-vu-meter">
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                    <div class="ai-voice-bar"></div>
-                </div>
-            </div>
-            <div class="ai-chat-panel">
-                <div class="ai-chat-messages">
-                    <p class="ai-chat-empty">Gespr\u00e4ch starten, um Transkript zu sehen</p>
-                </div>
-            </div>
-            <div class="ai-voice-footer">
-                <button class="ai-voice-action-btn ai-voice-mute-btn" title="Mikrofon stummschalten">
-                    <svg class="icon-mic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                        <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
-                        <line x1="12" x2="12" y1="19" y2="22"/>
-                    </svg>
-                    <svg class="icon-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="2" x2="22" y1="2" y2="22"/>
-                        <path d="M18.89 13.23A7.12 7.12 0 0 0 19 11v-1"/>
-                        <path d="M5 10v1a6.93 6.93 0 0 0 1.39 4.19"/>
-                        <path d="M9 10.5V5a3 3 0 0 1 5.14-2.12"/>
-                        <path d="M12 18.5a6.95 6.95 0 0 1-3.6-1.02"/>
-                        <line x1="12" x2="12" y1="19" y2="22"/>
-                    </svg>
-                </button>
-                <div class="ai-voice-config-warning"></div>
-                <button class="ai-voice-action-btn ai-voice-connect-btn" title="Verbindung herstellen">
-                    <svg class="icon-waves" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="12" y1="4" x2="12" y2="20"></line>
-                        <line x1="6" y1="10" x2="6" y2="14"></line>
-                        <line x1="18" y1="10" x2="18" y2="14"></line>
-                    </svg>
-                    <svg class="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
-            <!--
-            <div class="ai-event-log">
-                <div class="ai-event-log-header">
-                    <span>Event Log</span>
-                    <div style="display:flex;gap:6px">
-                        <button class="ai-event-log-clear" title="Log leeren">✕</button>
-                        <button class="ai-event-log-toggle" title="Log ein-/ausklappen">▼</button>
-                    </div>
-                </div>
-                <div class="ai-event-log-body"></div>
-            </div>
-            -->
-        `;
+    const ui = renderTemplate(this.container);
 
-    this.orbEl = this.container.querySelector(
-      ".ai-voice-orb",
-    ) as HTMLDivElement;
+    this.orbEl = ui.orb;
+    this.statusTextEl = ui.statusText;
+    this.statusHeaderEl = ui.statusHeader;
+    this.vuBars = ui.vuBars;
+    this.muteBtn = ui.muteBtn;
+    this.connectBtn = ui.connectBtn;
 
-    this.statusTextEl = this.container.querySelector(
-      ".ai-voice-status-text",
-    ) as HTMLParagraphElement;
+    this.chatView = new ChatView(this.container, ui.chatPanel, ui.chatMessages);
+    this.conversation = new Conversation(this.chatView);
 
-    this.statusHeaderEl = this.container.querySelector(
-      ".ai-voice-status-header",
-    ) as HTMLSpanElement;
-
-    this.vuBars = Array.from(
-      this.container.querySelectorAll(".ai-voice-bar"),
-    ) as HTMLDivElement[];
-
-    this.chatToggleBtn = this.container.querySelector(
-      ".ai-chat-toggle",
-    ) as HTMLButtonElement;
-
-    this.chatPanel = this.container.querySelector(
-      ".ai-chat-panel",
-    ) as HTMLDivElement;
-
-    this.chatMessagesEl = this.container.querySelector(
-      ".ai-chat-messages",
-    ) as HTMLDivElement;
-
-    this.muteBtn = this.container.querySelector(
-      ".ai-voice-mute-btn",
-    ) as HTMLButtonElement;
-
-    this.connectBtn = this.container.querySelector(
-      ".ai-voice-connect-btn",
-    ) as HTMLButtonElement;
-
-    this.chatToggleBtn.addEventListener("click", () => this.toggleChat());
+    ui.chatToggleBtn.addEventListener("click", () => this.chatView.toggle());
 
     // Das Panel ist der einzige Scroll-Container (.ai-chat-messages scrollt
     // nicht). Ein scroll-Listener deckt Maus, Touch und Tastatur gleichermaßen ab.
-    this.chatPanel.addEventListener("scroll", () => this.onChatScroll());
+    ui.chatPanel.addEventListener("scroll", () => this.chatView.onScroll());
 
     this.muteBtn.addEventListener("click", () => this.toggleMute());
     this.connectBtn.addEventListener("click", () => this.toggleConnection());
@@ -440,111 +299,23 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private setState(newState: ControlState, errorDetail?: string): void {
     this.controlState = newState;
 
-    const classes = ["ai-voice-container"];
+    // Klassen, Texte und Button-Titel: siehe ui/statusView.ts
+    const view = describeState({
+      state: newState,
+      chatOpen: this.chatView.isOpen,
+      isMuted: this.isMuted,
+      dormancyPhase: this.dormancyPhase,
+      reconnectAttempt: this.reconnectAttempt,
+      errorDetail,
+    });
 
-    classes.push(`state-${newState}`);
+    this.container.className = view.className;
 
-    if (["listening", "user-speaking", "ai-thinking", "ai-speaking"].includes(newState)) {
-      classes.push("state-connected");
-    }
+    if (this.statusTextEl) this.statusTextEl.textContent = view.statusText;
 
-    if (
-      [
-        "connecting",
-        "reconnecting",
-        "listening",
-        "user-speaking",
-        "ai-thinking",
-        "ai-speaking",
-      ].includes(newState)
-    ) {
-      classes.push("state-active");
-    }
+    if (this.statusHeaderEl) this.statusHeaderEl.textContent = view.header;
 
-    if (this.chatOpen) {
-      classes.push("chat-open");
-    }
-
-    if (this.isMuted) {
-      classes.push("muted");
-    }
-
-    // className wird komplett neu gebaut – ein setState während des Countdowns
-    // würde den Tipp-Hinweis sonst wegwischen.
-    if (this.dormancyPhase === "pending-dormant") {
-      classes.push("dormant-pending");
-    }
-
-    this.container.className = classes.join(" ");
-
-    const labels: Record<ControlState, { text: string; header: string }> = {
-      idle: { text: "Inaktiv", header: "Nicht verbunden" },
-
-      connecting: { text: "Verbinde\u2026", header: "Verbinde\u2026" },
-
-      reconnecting: {
-        text: `Verbindung wiederherstellen (${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})\u2026`,
-        header: "Verbindung unterbrochen",
-      },
-
-      listening: {
-        text: "Ich h\u00f6re zu\u2026",
-        header: "Verbunden",
-      },
-
-      "user-speaking": {
-        text: "Du sprichst\u2026",
-        header: "Verbunden",
-      },
-
-      "ai-thinking": {
-        text: "KoRa denkt nach\u2026",
-        header: "Verbunden",
-      },
-
-      "ai-speaking": {
-        text: "KoRa spricht\u2026",
-        header: "Verbunden",
-      },
-
-      dormant: {
-        text: "Ruhemodus – zum Fortsetzen erneut verbinden",
-        header: "Ruhemodus",
-      },
-
-      error: { text: errorDetail ?? "Verbindungsfehler", header: "Fehler" },
-    };
-
-    const info = labels[newState];
-
-    // Bei Mute + Listening: angepassten Statustext zeigen
-    if (this.statusTextEl) {
-      this.statusTextEl.textContent =
-        this.isMuted && newState === "listening"
-          ? "Mikrofon stummgeschaltet"
-          : info.text;
-    }
-
-    if (this.statusHeaderEl) this.statusHeaderEl.textContent = info.header;
-
-    const isActive = [
-      "connecting",
-      "reconnecting",
-      "listening",
-      "user-speaking",
-      "ai-thinking",
-      "ai-speaking",
-    ].includes(newState);
-
-    if (this.connectBtn) {
-      if (newState === "dormant") {
-        this.connectBtn.title = "Ruhemodus beenden";
-      } else {
-        this.connectBtn.title = isActive
-          ? "Verbindung trennen"
-          : "Verbindung herstellen";
-      }
-    }
+    if (this.connectBtn) this.connectBtn.title = view.connectTitle;
 
     if (this.orbEl) this.orbEl.style.transform = "";
 
@@ -657,7 +428,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     // Merkt sich, wo der Verlauf endet – die Ansage selbst soll beim Aufwecken
     // nicht als Gesprächskontext zurückgespielt werden.
-    this.chatLengthBeforeWarning = this.chatMessages.length;
+    this.chatLengthBeforeWarning = this.conversation.length;
 
     this.sendJson(userText(DORMANT_WARNING_PROMPT));
     this.sendJson({ type: "response.create" });
@@ -770,12 +541,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // sie wird beim Aufwecken nur nicht als Gesprächsverlauf zurückgespielt.
     if (
       this.chatLengthBeforeWarning !== null &&
-      this.chatLengthBeforeWarning < this.chatMessages.length
+      this.chatLengthBeforeWarning < this.conversation.length
     ) {
-      this.chatMessages = this.chatMessages.slice(
-        0,
-        this.chatLengthBeforeWarning,
-      );
+      this.conversation.truncate(this.chatLengthBeforeWarning);
     }
 
     // Verhindert, dass onclose einen Auto-Reconnect auslöst.
@@ -900,7 +668,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * Aufbau und Reihenfolge der Items: siehe historyItems() in agent/messages.ts.
    */
   private injectConversationHistory(noticeText: string): void {
-    const { items, historyCount } = historyItems(this.chatMessages, noticeText);
+    const { items, historyCount } = historyItems(this.conversation.history, noticeText);
 
     for (const item of items) this.sendJson(item);
 
@@ -968,17 +736,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         this.markConversationActivity();
 
         if (!keepsContext) {
-          this.transcriptText = "";
-
-          this.currentAiTranscript = "";
-
-          this.currentUserTranscript = "";
+          this.conversation.resetForNewSession();
 
           // Ein frischer Start begrüßt neu – eine evtl. noch gesetzte
           // Rückmeldung aus einer abgebrochenen Sitzung gilt nicht mehr.
           this.pendingResumeResponse = false;
 
-          this.clearChat();
+          this.conversation.clear();
         }
         this.mcpFollowUpPending = false;
 
@@ -1181,8 +945,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         }
 
         // 4. Erst NACH dem Cancel den State wechseln
-        this.currentUserTranscript = "";
-        this.lastUserBubbleEl = null;
+        this.conversation.resetUserStreaming();
         this.setState("user-speaking");
         break;
       }
@@ -1198,10 +961,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
       case "response.created":
         this.markConversationActivity();
-        this.currentAiTranscript = "";
-        this.lastAiBubbleEl = null;
-        this.chatMessages.push({ role: "ai", text: "" });
-        this.addChatBubble("ai", "\u2026");
+        this.conversation.beginAiResponse();
         this.setState("ai-thinking");
         break;
 
@@ -1291,19 +1051,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           this.log("MCP-Ergebnis liegt vor, fordere Antwort an");
           setTimeout(() => this.sendJson({ type: "response.create" }), 500);
         }
-        if (this.currentAiTranscript) {
-          this.transcriptText += `[KI]: ${this.currentAiTranscript}\n`;
-          const lastAi = this.chatMessages
-            .slice()
-            .reverse()
-            .find((m: ChatMessage) => m.role === "ai");
-          if (lastAi) lastAi.text = this.currentAiTranscript;
-          this.updateLastAiBubble();
-          this.currentAiTranscript = "";
+        if (this.conversation.commitAiTurn()) {
           this.notifyOutputChanged();
         }
 
-        this.lastAiBubbleEl = null;
         this.markConversationActivity();
 
         if (this.dormancyPhase === "warning") {
@@ -1339,33 +1090,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // Voice Live: Streaming User-Transkript (Wort für Wort)
       case "conversation.item.input_audio_transcription.delta":
         if (msg.delta) {
-          this.currentUserTranscript += msg.delta;
-          this.updateLastUserBubble();
+          this.conversation.appendUserDelta(msg.delta);
         }
         break;
 
       // Finales User-Transkript (kompatibel mit Realtime API)
       case "conversation.item.input_audio_transcription.completed":
         if (msg.transcript) {
-          this.currentUserTranscript = msg.transcript;
-          this.transcriptText += `[User]: ${msg.transcript}\n`;
-          // Wenn wir schon eine Streaming-Bubble haben, aktualisiere sie
-          if (this.lastUserBubbleEl) {
-            const lastUser = this.chatMessages
-              .slice()
-              .reverse()
-              .find((m: ChatMessage) => m.role === "user");
-
-            if (lastUser) lastUser.text = msg.transcript;
-
-            this.lastUserBubbleEl.textContent = msg.transcript;
-          } else {
-            this.chatMessages.push({ role: "user", text: msg.transcript });
-
-            this.addChatBubble("user", msg.transcript);
-          }
-          this.currentUserTranscript = "";
-          this.lastUserBubbleEl = null;
+          this.conversation.completeUser(msg.transcript);
           this.notifyOutputChanged();
         }
         break;
@@ -1373,26 +1105,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // KI-Transkript (Streaming)
       case "response.output_audio_transcript.delta":
         if (msg.delta) {
-          this.currentAiTranscript += msg.delta;
-          const lastAiDelta = this.chatMessages
-            .slice()
-            .reverse()
-            .find((m: ChatMessage) => m.role === "ai");
-          if (lastAiDelta) lastAiDelta.text = this.currentAiTranscript;
-          this.updateLastAiBubble();
+          this.conversation.appendAiDelta(msg.delta);
         }
 
         break;
 
       case "response.output_audio_transcript.done":
         if (msg.transcript) {
-          this.currentAiTranscript = msg.transcript;
-          const lastAiDone = this.chatMessages
-            .slice()
-            .reverse()
-            .find((m: ChatMessage) => m.role === "ai");
-          if (lastAiDone) lastAiDone.text = msg.transcript;
-          this.updateLastAiBubble();
+          this.conversation.setAiFinal(msg.transcript);
         }
 
         break;
@@ -1710,165 +1430,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #region Event-Log
 
-  // ══════════════════════════════════════════════════════════════════════
-  //  EVENT-LOG
-  // ══════════════════════════════════════════════════════════════════════
-
   private log(msg: string): void {
-    const ts = new Date().toISOString().slice(11, 23);
-    const entry = `[${ts}] ${msg}`;
-    this.eventLogText += entry + "\n";
-    this.eventLogEntries.push(entry);
-    console.log("[VoiceLive]", msg);
-
-    if (this.eventLogEl) {
-      const line = document.createElement("div");
-
-      line.className = "ai-event-log-line";
-
-      if (
-        msg.includes("FEHLER") ||
-        msg.includes("error") ||
-        msg.includes("Error")
-      ) {
-        line.classList.add("ai-event-log-error");
-      } else if (msg.includes("WARNUNG") || msg.includes("warning")) {
-        line.classList.add("ai-event-log-warn");
-      }
-
-      line.textContent = entry;
-
-      this.eventLogEl.appendChild(line);
-
-      this.eventLogEl.scrollTop = this.eventLogEl.scrollHeight;
-    }
-  }
-
-  // #endregion
-
-  // #region Chat-Panel
-
-  // ══════════════════════════════════════════════════════════════════════
-  //  CHAT-PANEL – WhatsApp-Style Transkript-Anzeige
-  // ══════════════════════════════════════════════════════════════════════
-
-  private toggleChat(): void {
-    this.chatOpen = !this.chatOpen;
-    this.container.classList.toggle("chat-open", this.chatOpen);
-
-    if (this.chatOpen) {
-      // Beim Öffnen immer ans Ende, auch wenn zuvor hochgescrollt war.
-      this.chatAutoScroll = true;
-
-      // Erst im nächsten Frame: Das Panel wechselt gerade von display:none auf
-      // flex, und der Orb-Bereich schrumpft per Transition – im selben Tick
-      // stünde noch die alte Geometrie zur Verfügung.
-      requestAnimationFrame(() => this.scrollToBottom(true));
-    }
-  }
-
-  private addChatBubble(role: "user" | "ai", text: string): void {
-    const emptyEl = this.chatMessagesEl.querySelector(".ai-chat-empty");
-
-    if (emptyEl) emptyEl.remove();
-
-    const bubble = document.createElement("div");
-    bubble.className = `ai-chat-bubble ai-chat-${role}`;
-    bubble.textContent = text;
-
-    if (
-      role === "user" &&
-      this.lastAiBubbleEl?.parentElement === this.chatMessagesEl
-    ) {
-      this.chatMessagesEl.insertBefore(bubble, this.lastAiBubbleEl);
-    } else {
-      this.chatMessagesEl.appendChild(bubble);
-    }
-
-    if (role === "ai") {
-      this.lastAiBubbleEl = bubble;
-    } else {
-      this.lastUserBubbleEl = bubble;
-    }
-
-    this.scrollToBottom();
-  }
-
-  private updateLastAiBubble(): void {
-    if (!this.lastAiBubbleEl) return;
-
-    this.lastAiBubbleEl.textContent = this.currentAiTranscript;
-
-    this.scrollToBottom();
-  }
-
-  /** Aktualisiert die letzte User-Bubble mit dem laufenden Streaming-Transkript. */
-  private updateLastUserBubble(): void {
-    if (!this.lastUserBubbleEl) {
-      // Erste Delta – neue Bubble erstellen
-
-      this.chatMessages.push({
-        role: "user",
-        text: this.currentUserTranscript,
-      });
-
-      this.addChatBubble("user", this.currentUserTranscript);
-
-      return;
-    }
-
-    this.lastUserBubbleEl.textContent = this.currentUserTranscript;
-
-    this.scrollToBottom();
-  }
-
-  /**
-   * Scrollt den Chat ans Ende, solange der Nutzer mitliest.
-   *
-   * @param force Auch scrollen, wenn der Nutzer hochgescrollt hat
-   *              (beim Öffnen des Chats gewollt).
-   */
-  private scrollToBottom(force = false): void {
-    const el = this.chatPanel;
-
-    if (!el) return;
-    if (!force && !this.chatAutoScroll) return;
-
-    // Eine Zuweisung an scrollTop feuert selbst ein scroll-Event. Ohne diese
-    // Markierung würde onChatScroll() den eigenen Scroll für eine Nutzergeste
-    // halten und das Mitscrollen sofort wieder abschalten.
-    this.isProgrammaticScroll = true;
-    el.scrollTop = el.scrollHeight;
-
-    requestAnimationFrame(() => {
-      this.isProgrammaticScroll = false;
-    });
-  }
-
-  /** Merkt sich, ob der Nutzer weggescrollt hat oder wieder mitliest. */
-  private onChatScroll(): void {
-    if (this.isProgrammaticScroll) return;
-
-    const el = this.chatPanel;
-
-    if (!el) return;
-
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-
-    this.chatAutoScroll =
-      distanceFromBottom <= VoiceLiveControl.CHAT_BOTTOM_THRESHOLD_PX;
-  }
-
-  private clearChat(): void {
-    this.chatMessages = [];
-    this.lastAiBubbleEl = null;
-    this.lastUserBubbleEl = null;
-    this.chatAutoScroll = true;
-
-    if (this.chatMessagesEl) {
-      this.chatMessagesEl.innerHTML =
-        '<p class="ai-chat-empty">Gespräch starten, um Transkript zu sehen</p>';
-    }
+    this.eventLog.log(msg);
   }
 
   // #endregion
@@ -2066,8 +1629,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // zerstören. Den echten Zustand liefert ConnectionStatus.
       Connected: this.controlState !== "idle" && this.controlState !== "error",
       ConnectionStatus: this.controlState,
-      Transcript: this.transcriptText,
-      EventLog: this.eventLogText,
+      Transcript: this.conversation.transcript,
+      EventLog: this.eventLog.text,
     };
   }
 
