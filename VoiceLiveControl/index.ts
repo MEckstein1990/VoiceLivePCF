@@ -56,7 +56,6 @@ import {
   MAX_DEFER_MS,
   MAX_RECONNECT_ATTEMPTS,
   QUIET_GATE_MS,
-  TOKEN_WAIT_MS,
   USE_LIVE_REFERENCE_AEC,
   WARNING_WATCHDOG_MS,
   readConfig,
@@ -65,10 +64,10 @@ import {
   DORMANT_CANCEL_PROMPT,
   DORMANT_RESUME_PROMPT,
   DORMANT_WARNING_PROMPT,
-  HISTORY_PREAMBLE_PROMPT,
   RECONNECT_RESUME_PROMPT,
   greetingPrompt,
 } from "./agent/prompts";
+import { buildSessionPayload, historyItems, userText } from "./agent/messages";
 import { getToolDisplayText } from "./agent/toolStatus";
 import {
   VOICE_LIVE_SAMPLE_RATE,
@@ -84,6 +83,7 @@ import {
   closeCodeToMessage,
   isRecoverableClose,
 } from "./session/reconnect";
+import { SessionTokenRequester } from "./session/sessionToken";
 
 export class VoiceLiveControl implements ComponentFramework.StandardControl<
   IInputs,
@@ -201,16 +201,8 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region Session-Token (kommt aus der App)
-  // Das Control hat kein Entra-Token. Die App ruft den Custom Connector „KoRa VoiceLive“ (er meldet den Nutzer an
-  // und schickt dessen Token an POST /api/voice-live/token) und liefert dessen Antwort als JSON über die
-  // Property SessionProperties (access_token und endpoint, den WebSocket-Endpunkt des Backends).
-  // Braucht das Control ein neues Token, löst es das Event OnTokenNeeded aus.
-  // Schlägt der Aufruf in der App fehl, liefert sie statt des JSON "error:<eindeutiger Zusatz>:<Meldung>".
-  // Der Zusatz (z. B. die Uhrzeit) sorgt dafür, dass sich der Wert bei jedem Fehler ändert, denn Power Apps
-  // meldet dem Control nur Änderungen.
-  private sessionProperties = "";
-  private tokenWaiter: ((value: string) => void) | null = null;
+  // #region Session-Token (kommt aus der App, siehe session/sessionToken.ts)
+  private sessionToken = new SessionTokenRequester();
   private events: ComponentFramework.Context<IInputs>["events"] | null = null;
 
   // #endregion
@@ -405,15 +397,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.config = readConfig(context.parameters);
 
     // Session-Properties aus der App: Ein neuer Wert beantwortet die offene Anforderung
-    // (siehe requestSessionToken). Ohne offene Anforderung wird er nur gemerkt.
+    // (siehe SessionTokenRequester). Ohne offene Anforderung wird er nur gemerkt.
     this.events = context.events;
-    const incoming = (context.parameters.SessionProperties.raw ?? "").trim();
-    if (incoming && incoming !== this.sessionProperties) {
-      this.sessionProperties = incoming;
-      const waiter = this.tokenWaiter;
-      this.tokenWaiter = null;
-      waiter?.(incoming);
-    }
+    this.sessionToken.offer((context.parameters.SessionProperties.raw ?? "").trim());
 
     // Kill-Switch während einer laufenden Ansage: Ablauf sofort abbrechen.
     if (dormantWasEnabled && !this.config.dormantEnabled) {
@@ -673,19 +659,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // nicht als Gesprächskontext zurückgespielt werden.
     this.chatLengthBeforeWarning = this.chatMessages.length;
 
-    this.sendJson({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: DORMANT_WARNING_PROMPT,
-          },
-        ],
-      },
-    });
+    this.sendJson(userText(DORMANT_WARNING_PROMPT));
     this.sendJson({ type: "response.create" });
 
     // Not-Aus, falls die Ansage nie beantwortet wird oder kein Audio kommt.
@@ -893,19 +867,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // Überschreibt den Countdown-Text mit dem normalen Status.
     this.setState("listening");
 
-    this.sendJson({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: DORMANT_CANCEL_PROMPT,
-          },
-        ],
-      },
-    });
+    this.sendJson(userText(DORMANT_CANCEL_PROMPT));
     this.sendJson({ type: "response.create" });
   }
 
@@ -935,79 +897,14 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   /**
    * Spielt den bisherigen Gesprächsverlauf in eine frische Session ein.
-   *
-   * Bewusst als einzelne Items mit echten Rollen statt als ein Textblock:
-   * Bei role "assistant" übernimmt das Modell diese Aussagen als seine eigenen
-   * und macht nahtlos weiter. Derselbe Inhalt als Transkript-Text in einer
-   * User-Nachricht wäre für das Modell nur ein Bericht ÜBER ein Gespräch –
-   * es antwortet dann mit "laut dem Verlauf haben wir über X gesprochen".
-   *
-   * REIHENFOLGE IST KRITISCH: Erst der Verlauf, der Hinweistext ZULETZT.
-   * Direkt danach folgt response.create, und das Modell antwortet immer auf
-   * den jüngsten Turn. Stünde der Hinweis vorne, wäre die letzte Nachricht
-   * eine alte Nutzer-Anweisung ("erzähl mir eine Kurzgeschichte") – die das
-   * Modell dann prompt ein zweites Mal ausführt, statt sich zurückzumelden.
+   * Aufbau und Reihenfolge der Items: siehe historyItems() in agent/messages.ts.
    */
   private injectConversationHistory(noticeText: string): void {
-    const history = this.chatMessages.filter((m) => m.text.trim());
+    const { items, historyCount } = historyItems(this.chatMessages, noticeText);
 
-    // Rahmt den Verlauf als Erinnerung ein, damit alte Anweisungen darin
-    // nicht als frische Aufträge gelesen werden.
-    if (history.length > 0) {
-      this.sendJson({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: HISTORY_PREAMBLE_PROMPT,
-            },
-          ],
-        },
-      });
-    }
+    for (const item of items) this.sendJson(item);
 
-    let injected = 0;
-
-    for (const msg of history) {
-
-      this.sendJson(
-        msg.role === "user"
-          ? {
-              type: "conversation.item.create",
-              item: {
-                type: "message",
-                role: "user",
-                content: [{ type: "input_text", text: msg.text }],
-              },
-            }
-          : {
-              type: "conversation.item.create",
-              item: {
-                type: "message",
-                role: "assistant",
-                content: [{ type: "text", text: msg.text }],
-              },
-            },
-      );
-
-      injected++;
-    }
-
-    // ZULETZT – siehe Reihenfolge-Hinweis oben. Das ist der Turn, auf den das
-    // Modell beim folgenden response.create tatsächlich antwortet.
-    this.sendJson({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: noticeText }],
-      },
-    });
-
-    this.log(`${injected} Konversations-Items injiziert`);
+    this.log(`${historyCount} Konversations-Items injiziert`);
   }
 
   /**
@@ -1019,71 +916,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
    * `mode` steuert, ob dabei der Gesprächsverlauf erhalten bleibt – siehe
    * `SessionStartMode` und `keepsContext` weiter unten.
    */
-  /**
-   * Fordert bei der App ein neues Session-Token an (Event OnTokenNeeded) und wartet auf die
-   * Property SessionProperties (JSON mit access_token und endpoint). Bei einem Fehler liefert die App
-   * "error:<eindeutiger Zusatz>:<Meldung>", das Control bricht dann sofort mit dieser Meldung ab.
-   * Die Wartezeit ist nur die Reserve für eine App, die das Event nicht beantwortet.
-   */
-  private requestSessionToken(): Promise<{
-    accessToken: string;
-    endpoint: string;
-  }> {
-    return new Promise((resolve, reject) => {
-      const raiseTokenNeeded = this.events?.OnTokenNeeded;
-      if (!raiseTokenNeeded) {
-        reject(
-          new Error(
-            "Das Event OnTokenNeeded gibt es nur in Canvas-Apps und Custom Pages",
-          ),
-        );
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        this.tokenWaiter = null;
-        reject(
-          new Error(
-            "Die App hat kein Session-Token geliefert (ist OnTokenNeeded belegt?)",
-          ),
-        );
-      }, TOKEN_WAIT_MS);
-
-      this.tokenWaiter = (value: string) => {
-        clearTimeout(timer);
-        if (value.startsWith("error:")) {
-          const message = value.split(":").slice(2).join(":").trim();
-          reject(
-            new Error(message || "Session-Token konnte nicht abgerufen werden"),
-          );
-          return;
-        }
-
-        let parsed: { access_token?: unknown; endpoint?: unknown } = {};
-        try {
-          parsed = JSON.parse(value);
-        } catch {
-          // fällt unten in die Fehlermeldung
-        }
-        const accessToken =
-          typeof parsed.access_token === "string" ? parsed.access_token : "";
-        const endpoint =
-          typeof parsed.endpoint === "string" ? parsed.endpoint : "";
-        if (!accessToken || !endpoint.startsWith("wss://")) {
-          reject(
-            new Error(
-              "SessionProperties enthält kein gültiges JSON mit access_token und endpoint (wss://…)",
-            ),
-          );
-          return;
-        }
-        resolve({ accessToken, endpoint });
-      };
-
-      raiseTokenNeeded();
-    });
-  }
-
   private async startSession(mode: SessionStartMode = "new"): Promise<void> {
     this.intentionalClose = false;
 
@@ -1103,7 +935,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       // anmeldet; das Backend prüft dabei Token und Ziel (Agent + Dataverse-Org). Agent-Parameter und Nutzer
       // stehen im Token, nicht in der WebSocket-URL. Ohne Token gibt es keine Session.
       // Das Backend in der Function App übernimmt die Auth gegenüber Azure und Dataverse.
-      const { accessToken, endpoint } = await this.requestSessionToken();
+      const { accessToken, endpoint } = await this.sessionToken.request(
+        this.events?.OnTokenNeeded,
+      );
 
       const wsUrl = `${endpoint}?access_token=${encodeURIComponent(accessToken)}`;
 
@@ -1147,74 +981,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           this.clearChat();
         }
         this.mcpFollowUpPending = false;
-        // #endregion Session-Handling
-        // #region Session-Payload
 
+        // Aufbau und Hintergründe: siehe buildSessionPayload() in agent/messages.ts.
+        const sessionPayload = buildSessionPayload(this.config);
 
-        // Voice-Agent-Endpunkt (kind: voice): Format der GA-Realtime-API mit
-        // verschachteltem audio.input / audio.output statt flacher Felder.
-        // Turn-Detection-Typ und Echo-Cancellation-Kanäle muss die Agent-Definition
-        // schon tragen (azure_semantic_vad_multilingual, bei USE_LIVE_REFERENCE_AEC
-        // Client-Referenz mit 2 Kanälen) – die Session kann sie nicht mehr ändern.
-        const sessionPayload: Record<string, unknown> = {
-          type: "realtime",
-          // instructions NICHT setzen – wird vom Foundry Agent geladen.
-          // Voice, VAD, Noise Suppression etc. sind Session-Properties und
-          // müssen immer explizit konfiguriert werden (kommen NICHT vom Agent).
-          output_modalities: ["text", "audio"],
-          audio: {
-            input: {
-              format: { type: "audio/pcm", rate: 24000 },
-
-              turn_detection: {
-                type: "azure_semantic_vad_multilingual",
-                threshold: this.config.vadThreshold,
-                prefix_padding_ms: 300,
-                silence_duration_ms: this.config.silenceDurationMs,
-                languages: [this.config.agentLanguage],
-                remove_filler_words: false,
-                interrupt_response: true,
-                auto_truncate: false,
-              },
-
-              noise_reduction: {
-                type: "azure_deep_noise_suppression",
-              },
-
-              // Live-Reference AEC: Der Client liefert das tatsächlich abgespielte
-              // Signal als zweiten Kanal mit, statt dass der Server sein eigenes
-              // gesendetes Audio als Referenz annimmt.
-              //
-              // Der Standardweg (reference_source "server") setzt voraus, dass der
-              // Client sofort abspielt – bei mehr als zwei Sekunden Verzögerung
-              // bricht die Entzerrung zusammen. Da die Wiedergabe hier auf einer
-              // Zeitleiste geplant wird und der Dienst schneller als Echtzeit
-              // streamt, ist genau das der Fall.
-              echo_cancellation: {
-                type: "server_echo_cancellation",
-                ...(USE_LIVE_REFERENCE_AEC
-                  ? { reference_source: "client", channels: 2 }
-                  : {}),
-              },
-
-              transcription: {
-                model: "azure-speech",
-                language: this.config.agentLanguage,
-              },
-            },
-            output: {
-              format: { type: "audio/pcm", rate: 24000 },
-              voice: {
-                type: "azure-standard",
-                name: this.config.agentVoice,
-                temperature: 0.8,
-              },
-              speed: Number(this.config.voiceSpeed) || 1,
-            },
-          },
-        };
-        // #endregion Session-Payload
-        
         // session.update MUSS als allererste Nachricht kommen –
         // der Server erwartet es als Session-Konfiguration.
         this.sendJson({ type: "session.update", session: sessionPayload });
@@ -1343,20 +1113,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "session.created":
         this.log("Session erfolgreich konfiguriert");
         if (!this.greetingSent) {
-          const greetingText = greetingPrompt(this.config.userName);
-          this.sendJson({
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: greetingText,
-                },
-              ],
-            },
-          });
+          this.sendJson(userText(greetingPrompt(this.config.userName)));
           this.sendJson({ type: "response.create" });
           this.greetingSent = true;
         } else if (this.pendingResumeResponse) {
