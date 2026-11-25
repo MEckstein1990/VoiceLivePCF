@@ -45,25 +45,18 @@ import { IInputs, IOutputs } from "./generated/ManifestTypes";
 
 import {
   ControlState,
-  DormancyPhase,
   ServerEvent,
   SessionStartMode,
 } from "./types";
 import {
   ControlConfig,
-  IDLE_CHECK_INTERVAL_MS,
   INITIAL_CONFIG,
-  MAX_DEFER_MS,
   MAX_RECONNECT_ATTEMPTS,
-  QUIET_GATE_MS,
   USE_LIVE_REFERENCE_AEC,
-  WARNING_WATCHDOG_MS,
   readConfig,
 } from "./config";
 import {
-  DORMANT_CANCEL_PROMPT,
   DORMANT_RESUME_PROMPT,
-  DORMANT_WARNING_PROMPT,
   RECONNECT_RESUME_PROMPT,
   greetingPrompt,
 } from "./agent/prompts";
@@ -77,6 +70,7 @@ import {
   isRecoverableClose,
 } from "./session/reconnect";
 import { SessionTokenRequester } from "./session/sessionToken";
+import { DormancyController } from "./dormancy/DormancyController";
 import { Conversation } from "./conversation/Conversation";
 import { ChatView } from "./ui/ChatView";
 import { EventLog } from "./ui/EventLog";
@@ -94,13 +88,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private notifyOutputChanged!: () => void;
   private ws: WebSocket | null = null;
   /** Audio-Pipeline: Mikrofon, Wiedergabe, AudioContext (siehe audio/AudioEngine.ts). */
-  private audio = new AudioEngine({
+  private audio: AudioEngine = new AudioEngine({
     log: (msg) => this.log(msg),
     // Ruhemodus-Ansage: siehe isProtectedResponse
     canSend: () =>
       this.ws?.readyState === WebSocket.OPEN &&
       !this.isMuted &&
-      !this.isProtectedResponse,
+      !this.dormancy.isProtectedResponse,
     sendAudio: (audio) =>
       this.sendJson({ type: "input_audio_buffer.append", audio }),
     onPlaybackDrained: () => this.onPlaybackDrained(),
@@ -119,30 +113,32 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region Ruhemodus (Zustand & Konstanten)
-  private dormancyPhase: DormancyPhase = "none";
-  /** Zeitstempel des letzten MCP-Tool-Aufrufs – Basis der Inaktivitätsmessung. */
-  private lastToolCallAt = 0;
-  /** Zeitstempel der letzten Gesprächsaktivität – speist das Quiet-Gate. */
-  private lastConversationAt = 0;
-  /** Seit wann die Warnung wegen laufendem Gespräch aufgeschoben wird. */
-  private deferredSince: number | null = null;
-  private pendingDormantTransition = false;
-  /** Tippen während der Ansage – wird ausgewertet, sobald sie durch ist. */
-  private cancelRequestedDuringWarning = false;
-  private idleCheckTimer: ReturnType<typeof setInterval> | null = null;
-  private warningWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Sekundentakt des sichtbaren Countdowns vor dem Trennen. */
-  private dormantCountdownTimer: ReturnType<typeof setInterval> | null = null;
+  // #region Ruhemodus (siehe dormancy/DormancyController.ts)
+  private dormancy: DormancyController = new DormancyController({
+    log: (msg) => this.log(msg),
+    config: () => this.config,
+    canAnnounce: () =>
+      this.controlState === "listening" &&
+      this.ws?.readyState === WebSocket.OPEN &&
+      !this.isCancelling,
+    conversationLength: () => this.conversation.length,
+    remainingPlaybackMs: () => this.audio.remainingPlaybackMs,
+    sendJson: (obj) => this.sendJson(obj),
+    setListening: () => this.setState("listening"),
+    showStatusText: (text) => {
+      if (this.statusTextEl) this.statusTextEl.textContent = text;
+    },
+    setPendingClass: (on) => {
+      if (on) {
+        this.container.classList.add("dormant-pending");
+      } else {
+        this.container.classList.remove("dormant-pending");
+      }
+    },
+    enterDormant: () => this.enterDormantMode(),
+  });
   /** Löst nach dem Wiederverbinden eine kurze Rückmeldung der KI aus. */
   private pendingResumeResponse = false;
-  /** Länge des Gesprächsverlaufs vor der Ruhemodus-Ansage – kürzt sie beim Wecken weg. */
-  private chatLengthBeforeWarning: number | null = null;
-
-  /** Während der Ruhemodus-Ansage darf der User die KI nicht unterbrechen. */
-  private get isProtectedResponse(): boolean {
-    return this.dormancyPhase !== "none" && this.dormancyPhase !== "dormant";
-  }
 
   // #endregion
 
@@ -239,7 +235,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // dass jemand da ist. pointerdown deckt Maus und Touch ab und reagiert
     // sofort – bei einem Fenster von wenigen Sekunden zählt das.
     this.container.addEventListener("pointerdown", (e: PointerEvent) =>
-      this.onContainerPointerDown(e),
+      this.dormancy.onPointerDown(e.target as Element | null),
     );
 
     this.container.className = "ai-voice-container state-idle";
@@ -258,7 +254,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // Kill-Switch während einer laufenden Ansage: Ablauf sofort abbrechen.
     if (dormantWasEnabled && !this.config.dormantEnabled) {
       this.log("Ruhemodus deaktiviert – laufender Ablauf wird abgebrochen");
-      this.abortDormancy();
+      this.dormancy.abort();
     }
 
     if (!this.loggedInit) {
@@ -299,7 +295,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       state: newState,
       chatOpen: this.chatView.isOpen,
       isMuted: this.isMuted,
-      dormancyPhase: this.dormancyPhase,
+      dormancyPhase: this.dormancy.phase,
       reconnectAttempt: this.reconnectAttempt,
       errorDetail,
     });
@@ -328,200 +324,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region Ruhemodus (Inaktivität → Dormant)
-  //
-  // Ohne MCP-Tool-Aufrufe wird die Anwendung nicht produktiv genutzt. Reines
-  // Sprechen taugt bewusst NICHT als Aktivitätssignal – sonst würden fremde
-  // Gespräche im Raum die Session offen halten, genau das soll verhindert
-  // werden. Nach Ablauf der Frist kündigt die KI den Ruhemodus unterbrechungs-
-  // fest an; kurz nach dem Ende der Ansage wird die Verbindung getrennt.
-
-  /** Setzt die Inaktivitätsmessung zurück (echte Nutzung erkannt). */
-  private resetIdleTimer(): void {
-    this.lastToolCallAt = Date.now();
-    this.deferredSince = null;
-  }
-
-  /** Merkt Gesprächsaktivität für das Quiet-Gate – KEIN Reset der Frist. */
-  private markConversationActivity(): void {
-    this.lastConversationAt = Date.now();
-  }
-
-  /**
-   * Ein MCP-Tool-Aufruf ist echte Nutzung und verlängert die Frist.
-   *
-   * Während der Ansage bewusst wirkungslos: Reagiert die KI auf den
-   * SYSTEM-HINWEIS trotz Anweisung mit einem Tool-Aufruf, würde der Reset den
-   * Ablauf abbrechen, während die Phase auf "warning" stehen bleibt – das
-   * Mikrofon bliebe dauerhaft stumm.
-   */
-  private noteToolActivity(): void {
-    this.markConversationActivity();
-
-    if (this.dormancyPhase !== "none") return;
-
-    this.resetIdleTimer();
-  }
-
-  /** Startet die periodische Inaktivitätsprüfung (idempotent). */
-  private startIdleWatch(): void {
-    if (this.idleCheckTimer !== null) return;
-
-    this.idleCheckTimer = setInterval(
-      () => this.onIdleTick(),
-      IDLE_CHECK_INTERVAL_MS,
-    );
-  }
-
-  /**
-   * Prüft, ob die Inaktivitätsfrist abgelaufen ist.
-   *
-   * Zeitstempel plus periodischer Tick statt eines einmaligen setTimeout:
-   * Läuft beim Ablauf der Frist gerade eine Antwort, muss die Ansage
-   * aufgeschoben werden (siehe Quiet-Gate unten). Ein einmaliger Timer müsste
-   * sich dafür selbst neu stellen – der Tick prüft ohnehin wieder nach.
-   * Nebeneffekt: Der Zeitstempel übersteht auch einen Verbindungsabbruch.
-   */
-  private onIdleTick(): void {
-    if (!this.config.dormantEnabled) return;
-    if (this.dormancyPhase !== "none") return;
-    if (this.controlState !== "listening") return;
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    if (this.isCancelling) return;
-
-    if (Date.now() - this.lastToolCallAt < this.config.idleTimeoutMs) return;
-
-    // Quiet-Gate: speech_stopped setzt sofort "listening", response.created
-    // folgt erst einige hundert ms später. Eine Ansage in dieses Fenster
-    // würde als zweite Response kollidieren (conversation_already_has_active_response).
-    const quietFor = Date.now() - this.lastConversationAt;
-    if (quietFor < QUIET_GATE_MS) {
-      if (this.deferredSince === null) {
-        this.deferredSince = Date.now();
-        this.log("Ruhemodus-Ansage aufgeschoben – Gespräch noch aktiv");
-      } else if (
-        Date.now() - this.deferredSince >= MAX_DEFER_MS
-      ) {
-        this.log("Ruhemodus-Ansage wird trotz Aktivität erzwungen");
-        this.triggerDormancyWarning();
-      }
-      return;
-    }
-
-    this.triggerDormancyWarning();
-  }
-
-  /** Lässt die KI den Ruhemodus ankündigen – unterbrechungsfest. */
-  private triggerDormancyWarning(): void {
-    this.log("Inaktivität erkannt – kündige Ruhemodus an");
-
-    // Ab hier sendet das Mikrofon nichts mehr (Gate in startMicrophone).
-    // Ohne Upstream-Audio feuert das server-seitige VAD nicht, die Ansage
-    // kann also weder client- noch serverseitig unterbrochen werden.
-    this.dormancyPhase = "warning";
-    this.deferredSince = null;
-
-    // Merkt sich, wo der Verlauf endet – die Ansage selbst soll beim Aufwecken
-    // nicht als Gesprächskontext zurückgespielt werden.
-    this.chatLengthBeforeWarning = this.conversation.length;
-
-    this.sendJson(userText(DORMANT_WARNING_PROMPT));
-    this.sendJson({ type: "response.create" });
-
-    // Not-Aus, falls die Ansage nie beantwortet wird oder kein Audio kommt.
-    this.warningWatchdogTimer = setTimeout(() => {
-      this.warningWatchdogTimer = null;
-      this.log("Watchdog: Ansage blieb aus – gehe trotzdem in den Ruhemodus");
-      this.enterDormantMode();
-    }, WARNING_WATCHDOG_MS);
-  }
-
-  /**
-   * Ersetzt den Watchdog durch eine berechnete Frist, sobald die Länge der
-   * Ansage bekannt ist.
-   *
-   * Deckt den Fall ab, dass onended nie feuert – etwa wenn der AudioContext im
-   * Hintergrund-Tab suspendiert wird. Der Ruhemodus greift dann trotzdem:
-   * Ist die Ansage nicht hörbar, ist der Benutzer erst recht nicht da.
-   */
-  private armDormantBackupTimer(): void {
-    if (this.warningWatchdogTimer !== null) {
-      clearTimeout(this.warningWatchdogTimer);
-      this.warningWatchdogTimer = null;
-    }
-
-    const remainingPlaybackMs = this.audio.remainingPlaybackMs;
-
-    const deadline = remainingPlaybackMs + this.config.dormantDelayMs + 2000;
-
-    this.warningWatchdogTimer = setTimeout(() => {
-      this.warningWatchdogTimer = null;
-      this.log("Playback-Ende blieb aus – gehe trotzdem in den Ruhemodus");
-      this.enterDormantMode();
-    }, deadline);
-  }
-
-  /** Ansage ist verklungen – kurze Nachlaufzeit, dann trennen. */
-  private armDormantDelay(): void {
-    if (this.dormancyPhase !== "warning") return;
-
-    // Wer schon während der Ansage getippt hat, bekommt gar keinen Countdown.
-    if (this.cancelRequestedDuringWarning) {
-      this.pendingDormantTransition = false;
-      this.cancelDormancy();
-
-      return;
-    }
-
-    this.dormancyPhase = "pending-dormant";
-    this.pendingDormantTransition = false;
-    this.container.classList.add("dormant-pending");
-
-    // Der Not-Aus hat seinen Zweck erfüllt – ab hier zählt nur noch die Nachlaufzeit.
-    if (this.warningWatchdogTimer !== null) {
-      clearTimeout(this.warningWatchdogTimer);
-      this.warningWatchdogTimer = null;
-    }
-
-    if (this.dormantCountdownTimer !== null) {
-      clearInterval(this.dormantCountdownTimer);
-    }
-
-    let remaining = Math.round(this.config.dormantDelayMs / 1000);
-    this.log(`Ansage beendet – Ruhemodus in ${remaining}s`);
-
-    // Erste Anzeige sofort, nicht erst nach der ersten Sekunde – sonst bliebe
-    // eine Sekunde lang der alte Statustext stehen.
-    this.showDormantCountdown(remaining);
-
-    this.dormantCountdownTimer = setInterval(() => {
-      remaining--;
-
-      if (remaining <= 0) {
-        if (this.dormantCountdownTimer !== null) {
-          clearInterval(this.dormantCountdownTimer);
-          this.dormantCountdownTimer = null;
-        }
-        this.enterDormantMode();
-        return;
-      }
-
-      this.showDormantCountdown(remaining);
-    }, 1000);
-  }
-
-  /**
-   * Schreibt den Countdown direkt in den Statustext.
-   *
-   * Bewusst nicht über setState: Das würde den Text beim nächsten
-   * Zustandswechsel überschreiben (gleiches Muster wie setToolStatus).
-   */
-  private showDormantCountdown(seconds: number): void {
-    if (!this.statusTextEl) return;
-
-    const unit = seconds === 1 ? "Sekunde" : "Sekunden";
-    this.statusTextEl.textContent = `Ruhemodus in ${seconds} ${unit}…`;
-  }
+  // #region Ruhemodus: Trennen und Aufwecken (Ablauf: dormancy/DormancyController.ts)
 
   /** Trennt die Verbindung, behält aber den Gesprächskontext. */
   private enterDormantMode(): void {
@@ -530,119 +333,37 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.log("Ruhemodus aktiv – Verbindung getrennt, Mikrofon aus");
 
     // Die Abschiedsansage aus dem Kontext nehmen, bevor cleanupConnection()
-    // über abortDormancy() den Merker verwirft. Die Chat-Blase bleibt sichtbar,
+    // über dormancy.abort() den Merker verwirft. Die Chat-Blase bleibt sichtbar,
     // sie wird beim Aufwecken nur nicht als Gesprächsverlauf zurückgespielt.
+    const lengthBeforeWarning = this.dormancy.lengthBeforeWarning;
     if (
-      this.chatLengthBeforeWarning !== null &&
-      this.chatLengthBeforeWarning < this.conversation.length
+      lengthBeforeWarning !== null &&
+      lengthBeforeWarning < this.conversation.length
     ) {
-      this.conversation.truncate(this.chatLengthBeforeWarning);
+      this.conversation.truncate(lengthBeforeWarning);
     }
 
     // Verhindert, dass onclose einen Auto-Reconnect auslöst.
     this.intentionalClose = true;
     this.reconnectAttempt = 0;
 
-    // cleanupConnection() ruft abortDormancy() – deshalb erst danach die
+    // cleanupConnection() ruft dormancy.abort() – deshalb erst danach die
     // Phase auf "dormant" setzen, sonst wird sie sofort wieder überschrieben.
     this.cleanupConnection();
 
-    this.dormancyPhase = "dormant";
+    this.dormancy.markDormant();
     this.setState("dormant");
-  }
-
-  /**
-   * Bricht einen laufenden Ruhemodus-Ablauf ab (Verbindungsabbruch, Fehler,
-   * manuelles Trennen, Kill-Switch).
-   *
-   * lastToolCallAt bleibt bewusst unangetastet: Die Inaktivität endet nicht
-   * dadurch, dass die Verbindung neu aufgebaut wurde. Kommt die Session zurück,
-   * löst der nächste Tick die Ansage erneut aus.
-   */
-  private abortDormancy(): void {
-    if (this.warningWatchdogTimer !== null) {
-      clearTimeout(this.warningWatchdogTimer);
-      this.warningWatchdogTimer = null;
-    }
-
-    if (this.dormantCountdownTimer !== null) {
-      clearInterval(this.dormantCountdownTimer);
-      this.dormantCountdownTimer = null;
-    }
-
-    this.pendingDormantTransition = false;
-    this.chatLengthBeforeWarning = null;
-    this.cancelRequestedDuringWarning = false;
-    this.container.classList.remove("dormant-pending");
-
-    // "dormant" ist ein Ruhezustand, kein laufender Ablauf – nicht zurücksetzen.
-    if (this.dormancyPhase !== "dormant" && this.dormancyPhase !== "none") {
-      this.log("Ruhemodus-Ablauf abgebrochen");
-      this.dormancyPhase = "none";
-    }
-  }
-
-  /**
-   * Tippen irgendwo auf das Control während des Ruhemodus-Ablaufs.
-   *
-   * Der Connect-Button ist ausgenommen – er behält seine Trennen-Funktion,
-   * damit derselbe Knopf nicht je nach Zeitpunkt Gegenteiliges tut.
-   */
-  private onContainerPointerDown(e: PointerEvent): void {
-    if (this.dormancyPhase !== "warning" && this.dormancyPhase !== "pending-dormant") {
-      return;
-    }
-
-    const target = e.target as Element | null;
-    if (target?.closest(".ai-voice-connect-btn")) return;
-
-    if (this.dormancyPhase === "pending-dormant") {
-      this.cancelDormancy();
-      return;
-    }
-
-    // Während der Ansage läuft noch eine Response – ein sofortiger Abbruch
-    // bräuchte ein zweites response.create und würde kollidieren. Also nur
-    // vormerken; armDormantDelay() wertet es aus, sobald die Ansage durch ist.
-    if (!this.cancelRequestedDuringWarning) {
-      this.cancelRequestedDuringWarning = true;
-      this.log("Abbruch während der Ansage vorgemerkt");
-    }
-  }
-
-  /**
-   * Der Benutzer hat sich gemeldet – Ruhemodus abblasen, Verbindung behalten.
-   *
-   * Anders als abortDormancy() wird die Inaktivitätsfrist hier zurückgesetzt.
-   * Das ist die bewusste Ausnahme von "nur MCP-Tool-Calls zählen": Ein Tippen
-   * ist ein eindeutiger Anwesenheitsnachweis, Geräusch im Raum wäre es nicht.
-   * Ohne den Reset würde der nächste Tick die Ansage sofort erneut auslösen.
-   */
-  private cancelDormancy(): void {
-    this.log("Ruhemodus durch Benutzer abgebrochen");
-
-    this.abortDormancy();
-    this.resetIdleTimer();
-    this.markConversationActivity();
-
-    // Überschreibt den Countdown-Text mit dem normalen Status.
-    this.setState("listening");
-
-    this.sendJson(userText(DORMANT_CANCEL_PROMPT));
-    this.sendJson({ type: "response.create" });
   }
 
   /** Weckt eine schlafende Session wieder auf – mit Gesprächskontext. */
   private wakeFromDormant(): void {
     this.log("Ruhemodus wird beendet – Session wird fortgesetzt");
 
-    this.dormancyPhase = "none";
     this.reconnectAttempt = 0;
 
-    // Ohne Reset läge der Zeitstempel weiterhin jenseits der Frist und der
-    // erste Tick würde die frisch geweckte Session sofort wieder schlafen legen.
-    this.resetIdleTimer();
-    this.markConversationActivity();
+    // Phase verlassen und die Frist neu starten – sonst würde der erste Tick
+    // die frisch geweckte Session sofort wieder schlafen legen.
+    this.dormancy.prepareWake();
 
     // Die Rückmeldung wird in startSession() angestoßen – gemeinsam mit dem
     // Reconnect-Pfad, damit beide identisch laufen.
@@ -723,10 +444,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // Beim Reconnect NICHT zurücksetzen: Ein Verbindungsabbruch ist keine
         // produktive Nutzung, nur MCP-Tool-Aufrufe verlängern die Frist.
         if (mode !== "reconnect") {
-          this.resetIdleTimer();
+          this.dormancy.resetIdleTimer();
         }
 
-        this.markConversationActivity();
+        this.dormancy.markConversationActivity();
 
         if (!keepsContext) {
           this.conversation.resetForNewSession();
@@ -763,7 +484,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         this.log("Starte Mikrofon...");
         void this.startMicrophone();
-        this.startIdleWatch();
+        this.dormancy.startIdleWatch();
         this.setState("listening");
       };
 
@@ -887,7 +608,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // Die Ruhemodus-Ansage darf nicht unterbrochen werden. Das Mikrofon-Gate
         // verhindert das bereits an der Quelle – dieser Guard ist die zweite
         // Absicherung und muss vor jedem Teardown stehen.
-        if (this.isProtectedResponse) {
+        if (this.dormancy.isProtectedResponse) {
           this.log("Barge-In während Ruhemodus-Ansage ignoriert");
           break;
         }
@@ -930,16 +651,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       }
 
       case "input_audio_buffer.speech_stopped":
-        this.markConversationActivity();
+        this.dormancy.markConversationActivity();
         // Während der Ruhemodus-Ansage nicht auf "listening" zurückfallen –
         // das würde den Countdown-Text überschreiben.
-        if (!this.isProtectedResponse) {
+        if (!this.dormancy.isProtectedResponse) {
           this.setState("listening");
         }
         break;
 
       case "response.created":
-        this.markConversationActivity();
+        this.dormancy.markConversationActivity();
         this.conversation.beginAiResponse();
         this.setState("ai-thinking");
         break;
@@ -951,7 +672,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           this.setToolStatus(msg.item.name);
           // Der Start des Aufrufs ist das verlässlichste Aktivitätssignal –
           // er feuert unabhängig davon, ob der Aufruf am Ende gelingt.
-          this.noteToolActivity();
+          this.dormancy.noteToolActivity();
         }
         break;
 
@@ -970,7 +691,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       case "response.mcp_call.completed":
         this.currentToolName = null;
         this.mcpFollowUpPending = true;
-        this.noteToolActivity();
+        this.dormancy.noteToolActivity();
         break;
 
       case "mcp_list_tools.in_progress":
@@ -1034,22 +755,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           this.notifyOutputChanged();
         }
 
-        this.markConversationActivity();
+        this.dormancy.markConversationActivity();
 
-        if (this.dormancyPhase === "warning") {
-          // Die Ruhemodus-Ansage ist fertig formuliert. Bewusst KEIN
-          // pendingListeningTransition – sonst würde das letzte onended erst
-          // auf "listening" schalten (grüner Verbunden-Punkt) und dann trennen.
-          if (this.audio.activeCount > 0) {
-            this.pendingDormantTransition = true;
-            this.log(
-              `Ruhemodus-Ansage: ${this.audio.activeCount} Audio-Chunks laufen noch`,
-            );
-            this.armDormantBackupTimer();
-          } else {
-            // Ansage ohne Audio (Textantwort, leer beendete Response).
-            this.armDormantDelay();
-          }
+        // Ist das die Ruhemodus-Ansage, übernimmt der Ruhemodus das Ende der Antwort.
+        if (this.dormancy.onResponseDone(this.audio.activeCount)) {
           break;
         }
 
@@ -1125,7 +834,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         // Echter Fehler: Ein laufender Ruhemodus-Ablauf würde sonst mit
         // stummem Mikrofon hängen bleiben.
-        this.abortDormancy();
+        this.dormancy.abort();
 
         if (this.ws?.readyState !== WebSocket.OPEN) {
           this.setState("error", errMsg);
@@ -1164,12 +873,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     }
 
     // Ruhemodus-Ansage ist verklungen → Nachlaufzeit starten
-    if (this.pendingDormantTransition) {
-      this.pendingDormantTransition = false;
-      if (this.dormancyPhase === "warning") {
-        this.armDormantDelay();
-      }
-    }
+    this.dormancy.onPlaybackDrained();
   }
 
   private sendJson(obj: unknown): void {
@@ -1250,12 +954,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.reconnectAttempt = 0;
     this.cleanup();
 
-    // Vollständiger Ausstieg – auch aus dem Ruhemodus heraus. abortDormancy()
-    // lässt "dormant" bewusst stehen, hier muss die Phase aber weg, sonst
-    // blockiert sie die Inaktivitätsprüfung der nächsten Session.
-    this.dormancyPhase = "none";
+    // Vollständiger Ausstieg – auch aus dem Ruhemodus heraus (siehe
+    // DormancyController.reset()).
+    this.dormancy.reset();
     this.pendingResumeResponse = false;
-    this.chatLengthBeforeWarning = null;
 
     this.setState("idle");
   }
@@ -1265,12 +967,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     // Zentraler Aufräumpunkt für alle Ruhemodus-Timer: deckt Verbindungsabbruch,
     // manuelles Trennen und destroy() in einem Zug ab. Ohne das würde ein
     // laufendes Intervall nach der Zerstörung notifyOutputChanged() aufrufen.
-    if (this.idleCheckTimer !== null) {
-      clearInterval(this.idleCheckTimer);
-      this.idleCheckTimer = null;
-    }
+    this.dormancy.stopIdleWatch();
 
-    this.abortDormancy();
+    this.dormancy.abort();
 
     this.visualizer.stop();
 
@@ -1290,7 +989,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.audio.stopPlayback();
 
     this.pendingListeningTransition = false;
-    this.pendingDormantTransition = false;
   }
 
   /** cleanupConnection() + Reconnect-Timer stoppen – gemeinsamer Kern von stopSession() und destroy(). */
