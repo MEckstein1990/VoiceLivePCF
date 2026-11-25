@@ -28,6 +28,7 @@
  * - **Audio-Ausgang:** `response.audio.delta` → PCM16 dekodieren → auf einer
  *   Zeitleiste (`nextPlayTime`) über `playbackBus` einplanen. Der Bus speist
  *   sowohl die Lautsprecher als auch Eingang 1 des Worklets (Echo-Referenz).
+ *   Beides steckt in `audio/AudioEngine.ts`.
  * - **Session-Start-Modi:** `new` (frischer Start), `reconnect` (nach
  *   Verbindungsabbruch) und `wake` (nach Ruhemodus) behalten oder verwerfen
  *   den Gesprächsverlauf – siehe `SessionStartMode` und `startSession()`.
@@ -68,15 +69,8 @@ import {
 } from "./agent/prompts";
 import { buildSessionPayload, historyItems, userText } from "./agent/messages";
 import { getToolDisplayText } from "./agent/toolStatus";
-import {
-  VOICE_LIVE_SAMPLE_RATE,
-  base64Pcm16ToFloat32,
-  bufferToBase64,
-  float32ToPcm16,
-  interleave,
-  resample,
-} from "./audio/pcm";
-import { WORKLET_CODE } from "./audio/workletCode";
+import { AudioEngine } from "./audio/AudioEngine";
+import { Visualizer } from "./audio/Visualizer";
 import {
   backoffDelay,
   closeCodeToMessage,
@@ -99,27 +93,22 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private container!: HTMLDivElement;
   private notifyOutputChanged!: () => void;
   private ws: WebSocket | null = null;
-  private audioContext: AudioContext | null = null;
-  private mediaStream: MediaStream | null = null;
-  private audioWorklet: AudioWorkletNode | null = null;
-  /**
-   * Quellknoten des Mikrofons. Muss als Feld geführt werden, weil nur er selbst
-   * seine ausgehenden Kanten lösen kann – der AudioContext überlebt einzelne
-   * Verbindungen und würde die Knoten sonst über die Sitzung hinaus behalten.
-   */
-  private micSource: MediaStreamAudioSourceNode | null = null;
-  private analyser: AnalyserNode | null = null;
-  /**
-   * Sammelpunkt der Wiedergabe. Alle Antwort-Chunks laufen hierüber, weil der
-   * Bus zwei Abnehmer hat: die Lautsprecher und – als Echo-Referenz für die
-   * serverseitige Entzerrung – Eingang 1 des Mikrofon-Worklets.
-   */
-  private playbackBus: GainNode | null = null;
-  private animationFrameId: number | null = null;
-  private nextPlayTime = 0;
+  /** Audio-Pipeline: Mikrofon, Wiedergabe, AudioContext (siehe audio/AudioEngine.ts). */
+  private audio = new AudioEngine({
+    log: (msg) => this.log(msg),
+    // Ruhemodus-Ansage: siehe isProtectedResponse
+    canSend: () =>
+      this.ws?.readyState === WebSocket.OPEN &&
+      !this.isMuted &&
+      !this.isProtectedResponse,
+    sendAudio: (audio) =>
+      this.sendJson({ type: "input_audio_buffer.append", audio }),
+    onPlaybackDrained: () => this.onPlaybackDrained(),
+  });
+  /** Orb und VU-Meter – wird in renderUI() angelegt. */
+  private visualizer!: Visualizer;
   private controlState: ControlState = "idle";
   private previousIsActive: boolean | null = null;
-  private activeSources: AudioBufferSourceNode[] = [];
   private isCancelling = false;
   private isMuted = false;
   private greetingSent = false;
@@ -192,7 +181,6 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   private orbEl!: HTMLDivElement;
   private statusTextEl!: HTMLParagraphElement;
   private statusHeaderEl!: HTMLSpanElement;
-  private vuBars!: HTMLDivElement[];
   private muteBtn!: HTMLButtonElement;
   private connectBtn!: HTMLButtonElement;
 
@@ -224,9 +212,16 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
     this.orbEl = ui.orb;
     this.statusTextEl = ui.statusText;
     this.statusHeaderEl = ui.statusHeader;
-    this.vuBars = ui.vuBars;
     this.muteBtn = ui.muteBtn;
     this.connectBtn = ui.connectBtn;
+
+    this.visualizer = new Visualizer(
+      ui.orb,
+      ui.vuBars,
+      () => this.audio.analyser,
+      () => this.isMuted,
+      () => this.controlState === "user-speaking",
+    );
 
     this.chatView = new ChatView(this.container, ui.chatPanel, ui.chatMessages);
     this.conversation = new Conversation(this.chatView);
@@ -455,9 +450,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.warningWatchdogTimer = null;
     }
 
-    const remainingPlaybackMs = this.audioContext
-      ? Math.max(0, this.nextPlayTime - this.audioContext.currentTime) * 1000
-      : 0;
+    const remainingPlaybackMs = this.audio.remainingPlaybackMs;
 
     const deadline = remainingPlaybackMs + this.config.dormantDelayMs + 2000;
 
@@ -907,24 +900,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
         // 1. Client-Audio SOFORT hart stoppen (wichtig für die UX im Auto!)
         this.pendingListeningTransition = false; // Barge-In überschreibt ausstehende Transition
-        if (this.activeSources.length > 0) {
-          for (const source of this.activeSources) {
-            try {
-              source.onended = null;
-
-              source.stop();
-            } catch (e) {
-              /* ignore */
-            }
-          }
-
-          this.activeSources = [];
-        }
+        this.audio.stopPlayback();
 
         // 2. Timeline für die nächste Response zurücksetzen
-        if (this.audioContext) {
-          this.nextPlayTime = this.audioContext.currentTime;
-        }
+        this.audio.resetTimeline();
 
         // 3. Den Server abbrechen – VOR setState, da controlState sich ändert!
         if (
@@ -1036,7 +1015,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           this.setState("ai-speaking");
         }
         if (msg.delta && (this.controlState === "ai-speaking" || this.controlState === "ai-thinking"))
-          this.playAudioDelta(msg.delta);
+          this.audio.play(msg.delta);
         break;
 
       case "response.done":
@@ -1061,10 +1040,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
           // Die Ruhemodus-Ansage ist fertig formuliert. Bewusst KEIN
           // pendingListeningTransition – sonst würde das letzte onended erst
           // auf "listening" schalten (grüner Verbunden-Punkt) und dann trennen.
-          if (this.activeSources.length > 0) {
+          if (this.audio.activeCount > 0) {
             this.pendingDormantTransition = true;
             this.log(
-              `Ruhemodus-Ansage: ${this.activeSources.length} Audio-Chunks laufen noch`,
+              `Ruhemodus-Ansage: ${this.audio.activeCount} Audio-Chunks laufen noch`,
             );
             this.armDormantBackupTimer();
           } else {
@@ -1077,9 +1056,9 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
         // Auf 'listening' wechseln – aber nur wenn kein Audio mehr im Playback-Buffer ist.
         // Falls noch Chunks abgespielt werden, warten wir auf das letzte onended.
         if (this.controlState === "ai-speaking" || this.controlState === "ai-thinking") {
-          if (this.activeSources.length > 0) {
+          if (this.audio.activeCount > 0) {
             this.pendingListeningTransition = true;
-            this.log(`response.done: ${this.activeSources.length} Audio-Chunks noch im Playback – warte auf Ende`);
+            this.log(`response.done: ${this.audio.activeCount} Audio-Chunks noch im Playback – warte auf Ende`);
           } else {
             this.setState("listening");
           }
@@ -1159,265 +1138,38 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
   // #endregion
 
-  // #region Audio-Pipeline (Mikrofon, Wiedergabe, Visualisierung)
+  // #region Audio (siehe audio/AudioEngine.ts, audio/Visualizer.ts)
 
-  /**
-   * Liefert den AudioContext und legt ihn beim ersten Aufruf an.
-   *
-   * Der Context überlebt bewusst einzelne Verbindungen: Android entscheidet beim
-   * Öffnen des Ausgabepfads einmalig, ob die Wiedergabe auf dem Musik- oder dem
-   * Anruf-Stream landet. Würde er pro Sitzung neu erzeugt, fiele diese
-   * Entscheidung jedes Mal neu – mit wechselnder Lautstärke als Folge.
-   *
-   * Die Worklet-Registrierung liegt im Erstell-Zweig, weil registerProcessor
-   * beim zweiten Aufruf wirft. So kann das strukturell nicht passieren.
-   */
-  private async ensureAudioContext(): Promise<AudioContext> {
-    if (!this.audioContext) {
-      const Ctx =
-        window.AudioContext ??
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-
-      this.audioContext = new Ctx();
-
-      const blob = new Blob([WORKLET_CODE], {
-        type: "application/javascript",
-      });
-      const workletUrl = URL.createObjectURL(blob);
-
-      try {
-        await this.audioContext.audioWorklet.addModule(workletUrl);
-      } finally {
-        URL.revokeObjectURL(workletUrl);
-      }
-
-      // Sammelpunkt der Wiedergabe. Er hängt an den Lautsprechern und wird
-      // zusätzlich als Echo-Referenz in das Mikrofon-Worklet geführt
-      // (siehe startMicrophone) – daher ein eigener Knoten statt destination.
-      this.playbackBus = this.audioContext.createGain();
-      this.playbackBus.connect(this.audioContext.destination);
-
-      this.log("AudioContext angelegt, Worklet registriert, Wiedergabe-Bus verbunden");
-    }
-
-    // Bewusst ohne Zustandsprüfung: cleanupConnection() suspendiert ohne zu
-    // warten. Verbindet man schnell wieder, steht state noch auf "running",
-    // während suspend() gerade läuft – eine Prüfung würde das resume
-    // überspringen und der Context bliebe stumm zurück. Auf einem laufenden
-    // Context ist resume() ein No-op.
-    await this.audioContext.resume();
-
-    return this.audioContext;
-  }
-
-  /**
-   * Mikrofon-Aufnahme starten und Audio-Pipeline aufbauen.
-   *
-   * Pipeline:
-   *   Mikrofon → MediaStreamSource → AudioWorklet → Resample → PCM16 → Base64 → WebSocket
-   *                                 ↘ Analyser → Visualisierung (Orb + VU-Meter)
-   *
-   * Kein manueller Noise Gate – Voice Live macht serverseitige Noise Suppression.
-   */
+  /** Startet Mikrofon und Visualisierung; ein Fehler landet in der Statusanzeige. */
   private async startMicrophone(): Promise<void> {
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        const errMsg =
-          "getUserMedia nicht verf\u00fcgbar \u2013 HTTPS oder Browser-Support pr\u00fcfen";
+    const error = await this.audio.startMicrophone();
 
-        this.log(`FEHLER (Mikrofon): ${errMsg}`);
-        this.setState("error", errMsg);
-        return;
-      }
-
-      // Genau eine Instanz unterdrückt das Echo: entweder der Server über
-      // Live-Reference AEC oder das Gerät. Beides zusammen wäre doppelt,
-      // keines von beiden ließe KoRa sich selbst ins Wort fallen.
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: !USE_LIVE_REFERENCE_AEC,
-        },
-        video: false,
-      });
-
-      const ctx = await this.ensureAudioContext();
-      const nativeRate = ctx.sampleRate;
-
-      // Die Uhr des Contexts läuft über Verbindungspausen weiter – Zeitlinie zurücksetzen.
-      this.nextPlayTime = ctx.currentTime;
-
-      this.micSource = ctx.createMediaStreamSource(this.mediaStream);
-
-      this.analyser = ctx.createAnalyser();
-      this.analyser.fftSize = 256;
-      this.micSource.connect(this.analyser);
-
-      // Zwei Eingänge: Mikrofon und Echo-Referenz. Der Wiedergabe-Bus liegt
-      // parallel auf den Lautsprechern und auf Eingang 1 – so bekommt der
-      // Server genau das Signal als Referenz, das der Benutzer wirklich hört.
-      this.audioWorklet = new AudioWorkletNode(ctx, "processor", {
-        numberOfInputs: 2,
-      });
-      this.micSource.connect(this.audioWorklet, 0, 0);
-      this.playbackBus?.connect(this.audioWorklet, 0, 1);
-
-      // Daten vom Worklet empfangen und an WebSocket senden
-      this.audioWorklet.port.onmessage = (e: MessageEvent) => {
-        // isProtectedResponse hält die Ruhemodus-Ansage unterbrechungsfest:
-        // Ohne Upstream-Audio erkennt das server-seitige VAD keine Sprache,
-        // also kann weder der Server noch der Client die Ansage abbrechen.
-        if (
-          this.ws?.readyState !== WebSocket.OPEN ||
-          this.isMuted ||
-          this.isProtectedResponse
-        )
-          return;
-
-        const { mic, reference } = e.data as {
-          mic: Float32Array;
-          reference: Float32Array;
-        };
-
-        // Beide Kanäle einzeln resampeln – der Context läuft auf Geräterate,
-        // gesendet wird mit 24 kHz. Erst danach verschränken, sonst würde das
-        // Resampling die Sample-Paare auseinanderreißen.
-        //
-        // Ohne Live-Reference AEC erwartet der Server Mono. Stereo zu senden
-        // läse er als Mono und verstünde nichts mehr – der Referenzkanal
-        // bleibt dann also weg.
-        const micResampled = resample(mic, nativeRate);
-        const payload = USE_LIVE_REFERENCE_AEC
-          ? interleave(micResampled, resample(reference, nativeRate))
-          : micResampled;
-
-        const pcm16 = float32ToPcm16(payload);
-        const base64 = bufferToBase64(pcm16.buffer as ArrayBuffer);
-
-        this.sendJson({ type: "input_audio_buffer.append", audio: base64 });
-      };
-
-      this.log("AudioWorklet gestartet, Mikrofonaufnahme läuft");
-
-      this.startVisualization();
-    } catch (err: unknown) {
-      const name = err instanceof DOMException ? err.name : "";
-
-      const messages: Record<string, string> = {
-        NotAllowedError:
-          "Mikrofonberechtigung verweigert \u2013 bitte in den App-Einstellungen erlauben",
-
-        PermissionDeniedError:
-          "Mikrofonberechtigung verweigert \u2013 bitte in den App-Einstellungen erlauben",
-
-        NotFoundError: "Kein Mikrofon gefunden",
-
-        NotReadableError: "Mikrofon wird von einer anderen App verwendet",
-
-        NotSupportedError:
-          "Mikrofon-API nicht unterst\u00fctzt (HTTPS erforderlich)",
-
-        SecurityError:
-          "Sicherheitseinschr\u00e4nkung \u2013 Seite muss \u00fcber HTTPS geladen sein",
-      };
-
-      const finalMsg =
-        messages[name] ?? `Mikrofonfehler: ${name || String(err)}`;
-
-      this.log(`FEHLER (Mikrofon): ${finalMsg}`);
-
-      this.setState("error", finalMsg);
+    if (error) {
+      this.log(`FEHLER (Mikrofon): ${error}`);
+      this.setState("error", error);
+      return;
     }
+
+    this.visualizer.start();
   }
 
-  /** Treibt Orb-Skalierung und VU-Meter aus der Lautstärke (RMS) des Mikrofonsignals. */
-  private startVisualization(): void {
-    if (!this.analyser) return;
-    const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-    const barCount = this.vuBars.length;
-
-    const tick = () => {
-      // analyser wird beim Trennen genullt – ohne Prüfung würde eine bereits
-      // eingeplante Frame-Ausführung hier krachen.
-      if (!this.analyser) {
-        this.animationFrameId = null;
-        return;
+  /** Der letzte Antwort-Chunk ist verklungen. */
+  private onPlaybackDrained(): void {
+    // Letzter Chunk fertig abgespielt → jetzt auf 'listening' wechseln
+    if (this.pendingListeningTransition) {
+      this.pendingListeningTransition = false;
+      if (this.controlState === "ai-speaking") {
+        this.setState("listening");
       }
+    }
 
-      this.animationFrameId = requestAnimationFrame(tick);
-      this.analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-
-      // Nur tatsächliche Lautstärke berechnen, wenn nicht gemuted
-      if (!this.isMuted) {
-        for (const v of dataArray) sum += v ** 2;
+    // Ruhemodus-Ansage ist verklungen → Nachlaufzeit starten
+    if (this.pendingDormantTransition) {
+      this.pendingDormantTransition = false;
+      if (this.dormancyPhase === "warning") {
+        this.armDormantDelay();
       }
-
-      const rms = Math.sqrt(sum / dataArray.length) / 255;
-      const level = Math.min(rms * 3.5, 1);
-
-      if (this.controlState === "user-speaking" && this.orbEl) {
-        this.orbEl.style.transform = `scale(${(1 + level * 0.35).toFixed(3)})`;
-      }
-
-      for (let i = 0; i < barCount; i++) {
-        const idx = Math.floor((i / barCount) * dataArray.length * 0.45);
-
-        // VU-Bars bei Mute fest auf 3px (Minimalhöhe) zwingen
-        const h = Math.max(3, this.isMuted ? 3 : (dataArray[idx] / 255) * 26);
-        this.vuBars[i].style.height = `${h}px`;
-      }
-    };
-
-    tick();
-  }
-
-  /** Dekodiert einen Base64/PCM16-Audio-Chunk und plant ihn lückenlos auf der Wiedergabe-Zeitleiste ein. */
-  private playAudioDelta(base64: string): void {
-    if (!this.audioContext) return;
-
-    const float32 = base64Pcm16ToFloat32(base64);
-
-    const audioBuffer = this.audioContext.createBuffer(
-      1,
-      float32.length,
-      VOICE_LIVE_SAMPLE_RATE,
-    );
-
-    audioBuffer.getChannelData(0).set(float32);
-    const source = this.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    // Über den Bus statt direkt auf destination: Er speist zusätzlich den
-    // Referenzkanal des Worklets für die serverseitige Echounterdrückung.
-    source.connect(this.playbackBus ?? this.audioContext.destination);
-    const now = this.audioContext.currentTime;
-    const startAt = Math.max(now, this.nextPlayTime);
-    source.start(startAt);
-
-    source.onended = () => {
-      const idx = this.activeSources.indexOf(source);
-
-      if (idx >= 0) this.activeSources.splice(idx, 1);
-
-      // Letzter Chunk fertig abgespielt → jetzt auf 'listening' wechseln
-      if (this.activeSources.length === 0 && this.pendingListeningTransition) {
-        this.pendingListeningTransition = false;
-        if (this.controlState === "ai-speaking") {
-          this.setState("listening");
-        }
-      }
-
-      // Ruhemodus-Ansage ist verklungen → Nachlaufzeit starten
-      if (this.activeSources.length === 0 && this.pendingDormantTransition) {
-        this.pendingDormantTransition = false;
-        if (this.dormancyPhase === "warning") {
-          this.armDormantDelay();
-        }
-      }
-    };
-
-    this.activeSources.push(source);
-    this.nextPlayTime = startAt + audioBuffer.duration;
+    }
   }
 
   private sendJson(obj: unknown): void {
@@ -1520,11 +1272,7 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
 
     this.abortDormancy();
 
-    if (this.animationFrameId !== null) {
-      cancelAnimationFrame(this.animationFrameId);
-
-      this.animationFrameId = null;
-    }
+    this.visualizer.stop();
 
     if (this.ws) {
       this.ws.onclose = null;
@@ -1534,75 +1282,13 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
       this.ws = null;
     }
 
-    // Der AudioContext überlebt einzelne Verbindungen (siehe
-    // ensureAudioContext), also muss der Sitzungs-Graph hier von Hand abgebaut
-    // werden. Früher hat close() das miterledigt – bleiben die Knoten stehen,
-    // sammeln sich Quellknoten auf beendeten MediaStreams an und der neue
-    // Mikrofonpfad liefert keine Daten mehr.
-    //
-    // Reihenfolge ist wichtig: erst die Knoten trennen, dann die Tracks
-    // stoppen. Andersherum steht kurzzeitig ein Quellknoten auf einem
-    // beendeten Stream im Graph – genau der Zustand, der das Problem auslöst.
-    if (this.audioWorklet) {
-      // Handler lösen, bevor der Knoten geht: Ein noch lebendes Worklet würde
-      // sonst Audio in die nächste Sitzung schieben.
-      this.audioWorklet.port.onmessage = null;
-      this.audioWorklet.port.close();
+    // Sitzungs-Graph abbauen – der AudioContext selbst bleibt (siehe AudioEngine).
+    this.audio.teardownSession();
 
-      // Die Referenz-Kante gehört dem Bus, nicht dem Worklet – sie muss dort
-      // gelöst werden. Gezielt nur diese eine Verbindung, sonst verliert der
-      // Bus auch die Lautsprecher. Der Bus selbst überlebt die Sitzung.
-      try {
-        this.playbackBus?.disconnect(this.audioWorklet, 0, 1);
-      } catch {
-        /* war nicht verbunden */
-      }
+    this.visualizer.reset();
 
-      this.audioWorklet.disconnect();
-      this.audioWorklet = null;
-    }
+    this.audio.stopPlayback();
 
-    if (this.micSource) {
-      // disconnect() muss auf der Quelle passieren – die Kante zum Worklet
-      // hängt an ihr, nicht am Zielknoten.
-      this.micSource.disconnect();
-      this.micSource = null;
-    }
-
-    if (this.analyser) {
-      this.analyser.disconnect();
-      this.analyser = null;
-    }
-
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((t) => t.stop());
-      this.mediaStream = null;
-    }
-
-    // Bewusst kein suspend(): Das schließt den Ausgabepfad, und beim Öffnen
-    // entscheidet Android neu, ob die Wiedergabe auf dem Musik- oder dem
-    // Anruf-Stream landet. Der Context läuft durch, sein Graph ist jetzt leer
-    // und rendert Stille.
-
-    if (this.orbEl) this.orbEl.style.transform = "";
-
-    this.vuBars.forEach((b) => {
-      b.style.height = "3px";
-    });
-
-    this.activeSources.forEach((s) => {
-      try {
-        // onended zuerst lösen: stop() feuert es asynchron, das Array ist dann
-        // längst leer – der Handler würde eine Transition scharfschalten,
-        // obwohl die Verbindung gerade abgebaut wird.
-        s.onended = null;
-        s.stop();
-      } catch {
-        /* */
-      }
-    });
-
-    this.activeSources = [];
     this.pendingListeningTransition = false;
     this.pendingDormantTransition = false;
   }
@@ -1637,22 +1323,10 @@ export class VoiceLiveControl implements ComponentFramework.StandardControl<
   public destroy(): void {
     this.cleanup();
 
-    // Der AudioContext überlebt bewusst einzelne Verbindungen (siehe
-    // ensureAudioContext). Beim Zerstören des Controls muss er aber wirklich
-    // geschlossen werden, sonst stapeln sich in einer Canvas App bei jedem
-    // Screen-Wechsel neue Contexts, bis der Browser keinen weiteren zulässt.
-    //
-    // Bewusst hier und NICHT in cleanup(): Das ruft auch stopSession() auf,
-    // dort würde ein close() die Wiederverwendung wieder zunichtemachen.
-    if (this.playbackBus) {
-      this.playbackBus.disconnect();
-      this.playbackBus = null;
-    }
-
-    if (this.audioContext) {
-      void this.audioContext.close();
-      this.audioContext = null;
-    }
+    // Der AudioContext überlebt bewusst einzelne Verbindungen. Beim Zerstören
+    // des Controls muss er aber wirklich geschlossen werden (siehe
+    // AudioEngine.dispose()).
+    this.audio.dispose();
   }
 
   // #endregion
